@@ -121,14 +121,6 @@ var runner = configs.reduceRight(function (prev, cfg) {
   };
 }, function (buildReportText) {
   try {
-    var scriptText,
-      indexContents = fs.readFileSync(indexPath, 'utf8'),
-      startComment = '<!-- START BACKEND INJECT - do not modify -->',
-      endComment = '<!-- END BACKEND INJECT -->',
-      startIndex = indexContents.indexOf(startComment),
-      endIndex = indexContents.indexOf(endComment),
-      indent = '  ';
-
     // To see how the layers were partitioned, uncomment
     console.log(scriptUrls);
 
@@ -139,36 +131,6 @@ var runner = configs.reduceRight(function (prev, cfg) {
         fs.writeFileSync(layerPaths[prop], layerTexts[prop], 'utf8');
       }
     }
-
-    // Write out the script tags in gaia email index.html
-    if (startIndex === -1 || endIndex === -1) {
-      console.log('Updating email index.html failed. Cannot find insertion comments.');
-      process.exit(1);
-    }
-
-    // List of tags used in gaia
-    var indexPaths = [
-      'alameda',
-      'end'
-    ];
-    fs.createReadStream(path.join(__dirname, '..', 'deps', 'alameda.js'))
-      .pipe(fs.createWriteStream(path.join(jsPath, 'alameda.js')));
-    fs.createReadStream(path.join(__dirname, 'end.js'))
-      .pipe(fs.createWriteStream(path.join(jsPath, 'end.js')));
-
-    scriptText = startComment + '\n' +
-      indexPaths.map(function (name) {
-
-        return indent + '<script type="application/javascript;version=1.8" src="' +
-          'js/ext/' + name + '.js' +
-          '"></script>';
-      }).join('\n') + '\n' + indent;
-
-    indexContents = indexContents.substring(0, startIndex) +
-      scriptText +
-      indexContents.substring(endIndex);
-
-    fs.writeFileSync(indexPath, indexContents, 'utf8');
 
   } catch (e) {
     console.error(e);
