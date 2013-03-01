@@ -131,7 +131,6 @@ var runner = configs.reduceRight(function (prev, cfg) {
         fs.writeFileSync(layerPaths[prop], layerTexts[prop], 'utf8');
       }
     }
-
   } catch (e) {
     console.error(e);
     process.exit(1);
