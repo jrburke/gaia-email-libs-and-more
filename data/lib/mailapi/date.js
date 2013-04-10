@@ -75,14 +75,14 @@ define(
  *
  * !BEFORE(a, b) === SINCE(a, b)
  */
-const BEFORE = exports.BEFORE =
+var BEFORE = exports.BEFORE =
       function BEFORE(testDate, comparisonDate) {
   // testDate is numerically less than comparisonDate, so it is chronologically
   // before it.
   return testDate < comparisonDate;
 };
 
-const ON_OR_BEFORE = exports.ON_OR_BEFORE =
+var ON_OR_BEFORE = exports.ON_OR_BEFORE =
       function ON_OR_BEFORE(testDate, comparisonDate) {
   return testDate <= comparisonDate;
 };
@@ -93,33 +93,75 @@ const ON_OR_BEFORE = exports.ON_OR_BEFORE =
  *
  * !SINCE(a, b) === BEFORE(a, b)
  */
-const SINCE = exports.SINCE =
+var SINCE = exports.SINCE =
       function SINCE(testDate, comparisonDate) {
   // testDate is numerically greater-than-or-equal-to comparisonDate, so it
   // chronologically after/since it.
   return testDate >= comparisonDate;
 };
 
-const STRICTLY_AFTER = exports.STRICTLY_AFTER =
+var STRICTLY_AFTER = exports.STRICTLY_AFTER =
       function STRICTLY_AFTER(testDate, comparisonDate) {
   return testDate > comparisonDate;
 };
 
-const IN_BS_DATE_RANGE = exports.IN_BS_DATE_RANGE =
+var IN_BS_DATE_RANGE = exports.IN_BS_DATE_RANGE =
       function IN_BS_DATE_RANGE(testDate, startTS, endTS) {
   return testDate >= startTS && testDate < endTS;
+};
+
+var PASTWARDS = 1, FUTUREWARDS = -1;
+/**
+ * Check if `testDate` is "beyond" the comparison date given the `dir`.  If
+ * the direction is pastwards, we will return true if testDate happened
+ * chronologically before comparisonDate.  If the direction is futurewards,
+ * we will return true if testDate happened chronologically after
+ * comparisonDate.
+ */
+var TIME_DIR_AT_OR_BEYOND = exports.TIME_DIR_AT_OR_BEYOND =
+      function TIME_DIR_AT_OR_BEYOND(dir, testDate, comparisonDate) {
+  if (dir === PASTWARDS)
+    return testDate <= comparisonDate;
+  // we use null as a sentinel value for 'the future'/'now'
+  else if (comparisonDate === null)
+    return testDate >= NOW();
+  else // FUTUREWARDS
+    return testDate >= comparisonDate;
+};
+/**
+ * Compute the delta of the `testDate` relative to the `comparisonDate` where
+ * a positive value indicates `testDate` is beyond the `comparisonDate` in
+ * the given direction and a negative value indicates it is before it.
+ */
+var TIME_DIR_DELTA = exports.TIME_DIR_DELTA =
+      function TIME_DIR_DELTA(dir, testDate, comparisonDate) {
+  if (dir === PASTWARDS)
+    return testDate - comparisonDate;
+  else // FUTUREWARDS
+    return comparisonDate - testDate;
+};
+/**
+ * Add `time` to the `baseDate` in the given direction.  So if the direction
+ * is `PASTWARDS`, then we add the date, otherwise we subtract it.
+ */
+var TIME_DIR_ADD = exports.TIME_DIR_ADD =
+      function TIME_DIR_ADD(dir, baseDate, time) {
+  if (dir === PASTWARDS)
+    return baseDate + time;
+  else // FUTUREWARDS
+    return baseDate - time;
 };
 
 //function DATE_RANGES_OVERLAP(A_startTS, A_endTS, B_startTS, B_endTS) {
 //}
 
-const HOUR_MILLIS = exports.HOUR_MILLIS = 60 * 60 * 1000;
-const DAY_MILLIS = exports.DAY_MILLIS = 24 * 60 * 60 * 1000;
+var HOUR_MILLIS = exports.HOUR_MILLIS = 60 * 60 * 1000;
+var DAY_MILLIS = exports.DAY_MILLIS = 24 * 60 * 60 * 1000;
 
 /**
  * Testing override that when present replaces use of Date.now().
  */
-var TIME_WARPED_NOW = null, FUTURE_TIME_WARPED_NOW = null;
+var TIME_WARPED_NOW = null;
 
 /**
  * Pretend that 'now' is actually a fixed point in time for the benefit of
@@ -128,24 +170,16 @@ var TIME_WARPED_NOW = null, FUTURE_TIME_WARPED_NOW = null;
 exports.TEST_LetsDoTheTimewarpAgain = function(fakeNow) {
   if (fakeNow === null) {
     TIME_WARPED_NOW = null;
-    FUTURE_TIME_WARPED_NOW = null;
     return;
   }
   if (typeof(fakeNow) !== 'number')
     fakeNow = fakeNow.valueOf();
   TIME_WARPED_NOW = fakeNow;
-  // because of exclusive time comparison ops , we actually want to use the first
-  // day after the TIME_WARPED_NOW...
-  FUTURE_TIME_WARPED_NOW = quantizeDate(fakeNow + DAY_MILLIS);
 };
 
-const NOW = exports.NOW =
+var NOW = exports.NOW =
       function NOW() {
   return TIME_WARPED_NOW || Date.now();
-};
-const FUTURE = exports.FUTURE =
-      function FUTURE() {
-  return FUTURE_TIME_WARPED_NOW || null;
 };
 
 /**
@@ -153,26 +187,43 @@ const FUTURE = exports.FUTURE =
  * that day.  This results in rounding up; if it's noon right now and you
  * ask for 2 days ago, you really get 2.5 days worth of time.
  */
-const makeDaysAgo = exports.makeDaysAgo =
-      function makeDaysAgo(numDays) {
-  var //now = quantizeDate(TIME_WARPED_NOW || Date.now()),
-      //past = now - numDays * DAY_MILLIS;
-      past = (FUTURE_TIME_WARPED_NOW || quantizeDate(Date.now())) -
-               (numDays + 1) * DAY_MILLIS;
+var makeDaysAgo = exports.makeDaysAgo =
+      function makeDaysAgo(numDays, tzOffset) {
+  var past = quantizeDate((TIME_WARPED_NOW || Date.now()) + tzOffset) -
+               numDays * DAY_MILLIS;
   return past;
 };
-const makeDaysBefore = exports.makeDaysBefore =
-      function makeDaysBefore(date, numDaysBefore) {
+var makeDaysBefore = exports.makeDaysBefore =
+      function makeDaysBefore(date, numDaysBefore, tzOffset) {
+  if (date === null)
+    return makeDaysAgo(numDaysBefore - 1, tzOffset);
   return quantizeDate(date) - numDaysBefore * DAY_MILLIS;
 };
 /**
  * Quantize a date to midnight on that day.
  */
-const quantizeDate = exports.quantizeDate =
+var quantizeDate = exports.quantizeDate =
       function quantizeDate(date) {
+  if (date === null)
+    return null;
   if (typeof(date) === 'number')
     date = new Date(date);
   return date.setUTCHours(0, 0, 0, 0).valueOf();
 };
+
+/**
+ * If a date is already lined up with midnight of its day, then return that,
+ * otherwise round up to the midnight of the next day.
+ */
+var quantizeDateUp = exports.quantizeDateUp =
+      function quantizeDateUp(date) {
+  if (typeof(date) === 'number')
+    date = new Date(date);
+  var truncated = date.setUTCHours(0, 0, 0, 0).valueOf();
+  if (date.valueOf()  === truncated)
+    return truncated;
+  return truncated + DAY_MILLIS;
+};
+
 
 }); // end define

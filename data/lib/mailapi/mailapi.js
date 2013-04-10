@@ -173,6 +173,9 @@ function MailFolder(api, wireRep) {
    *   }
    *   @case['inbox']
    *   @case['drafts']
+   *   @case['localdrafts']{
+   *     Local-only folder that stores drafts composed on this device.
+   *   }
    *   @case['queue']
    *   @case['sent']
    *   @case['trash']
@@ -266,6 +269,12 @@ function MailHeader(slice, wireRep) {
   this.author = wireRep.author;
 
   this.date = new Date(wireRep.date);
+
+  this.to = wireRep.to;
+  this.cc = wireRep.cc;
+  this.bcc = wireRep.bcc;
+  this.replyTo = wireRep.replyTo;
+
   this.__update(wireRep);
   this.hasAttachments = wireRep.hasAttachments;
 
@@ -291,6 +300,9 @@ MailHeader.prototype = {
   },
 
   __update: function(wireRep) {
+    if (wireRep.snippet !== null)
+      this.snippet = wireRep.snippet;
+
     this.isRead = wireRep.flags.indexOf('\\Seen') !== -1;
     this.isStarred = wireRep.flags.indexOf('\\Flagged') !== -1;
     this.isRepliedTo = wireRep.flags.indexOf('\\Answered') !== -1;
@@ -347,8 +359,12 @@ MailHeader.prototype = {
    * Request the `MailBody` instance for this message, passing it to the
    * provided callback function once retrieved.
    */
-  getBody: function(callback) {
-    this._slice._api._getBodyForMessage(this, callback);
+  getBody: function(options, callback) {
+    if (typeof(options) === 'function') {
+      callback = options;
+      options = null;
+    }
+    this._slice._api._getBodyForMessage(this, options, callback);
   },
 
   /**
@@ -443,15 +459,12 @@ MailMatchedHeader.prototype = {
  * management to worry about.  However, you should keep the `MailHeader` alive
  * and worry about its lifetime since the message can get deleted, etc.
  */
-function MailBody(api, suid, wireRep) {
+function MailBody(api, suid, wireRep, handle) {
   this._api = api;
   this.id = suid;
   this._date = wireRep.date;
+  this._handle = handle;
 
-  this.to = wireRep.to;
-  this.cc = wireRep.cc;
-  this.bcc = wireRep.bcc;
-  this.replyTo = wireRep.replyTo;
   this.attachments = null;
   if (wireRep.attachments) {
     this.attachments = [];
@@ -463,6 +476,9 @@ function MailBody(api, suid, wireRep) {
   this._relatedParts = wireRep.relatedParts;
   this.bodyReps = wireRep.bodyReps;
   this._cleanup = null;
+
+  this.onchange = null;
+  this.ondead = null;
 }
 MailBody.prototype = {
   toString: function() {
@@ -483,6 +499,21 @@ MailBody.prototype = {
     if (!this._relatedParts)
       return 0;
     return this._relatedParts.length;
+  },
+
+  /**
+   * true if all the bodyReps are downloaded.
+   */
+  get bodyRepsDownloaded() {
+    var i = 0;
+    var len = this.bodyReps.length;
+
+    for (; i < len; i++) {
+      if (!this.bodyReps[i].isDownloaded) {
+        return false;
+      }
+    }
+    return true;
   },
 
   /**
@@ -603,7 +634,16 @@ MailBody.prototype = {
       this._cleanup();
       this._cleanup = null;
     }
-  },
+
+    // Remember to cleanup event listeners except ondead!
+    this.onchange = null;
+
+    this._api.__bridgeSend({
+      type: 'killBody',
+      id: this.id,
+      handle: this._handle
+    });
+  }
 };
 
 /**
@@ -784,6 +824,16 @@ function BridgedViewSlice(api, ns, handle) {
   this.atBottom = false;
 
   /**
+   * Can we potentially grow the slice in the ngative direction if the user
+   * requests it?  For example, triggering an IMAP sync for a part of the
+   * time-range we have not previously synchronized.
+   *
+   * This is only really meaningful when `atTop` is true; if we are not at the
+   * top, this value will be false.
+   */
+  this.userCanGrowUpwards = false;
+
+  /**
    * Can we potentially grow the slice in the positive direction if the user
    * requests it?  For example, triggering an IMAP sync for a part of the
    * time-range we have not previously synchronized.
@@ -910,8 +960,11 @@ FoldersViewSlice.prototype.getFirstFolderWithName = function(name, items) {
   return null;
 };
 
-function HeadersViewSlice(api, handle) {
-  BridgedViewSlice.call(this, api, 'headers', handle);
+function HeadersViewSlice(api, handle, ns) {
+  BridgedViewSlice.call(this, api, ns || 'headers', handle);
+
+  this._snippetRequestId = 1;
+  this._snippetRequests = {};
 }
 HeadersViewSlice.prototype = Object.create(BridgedViewSlice.prototype);
 /**
@@ -927,6 +980,58 @@ HeadersViewSlice.prototype.refresh = function() {
       type: 'refreshHeaders',
       handle: this._handle
     });
+};
+
+HeadersViewSlice.prototype._notifyRequestSnippetsComplete = function(reqId) {
+  var callback = this._snippetRequests[reqId];
+  if (reqId && callback) {
+    callback(true);
+    delete this._snippetRequests[reqId];
+  }
+};
+
+/**
+ * Request snippets for range of headers in the slice.
+ *
+ *    // start/end inclusive
+ *    slice.maybeRequestSnippets(5, 10);
+ *
+ * The results will be sent through the standard slice/header events.
+ */
+HeadersViewSlice.prototype.maybeRequestSnippets = function(idxStart, idxEnd, callback) {
+  var messages = [];
+
+  idxEnd = Math.min(idxEnd, this.items.length - 1);
+
+  for (; idxStart <= idxEnd; idxStart++) {
+    var item = this.items[idxStart];
+    // ns of 'headers' has the id/date on the item, where 'matchedHeaders'
+    // has it on header.date
+    if (this._ns === 'matchedHeaders') {
+      item = item.header;
+    }
+
+    if (item && item.snippet === null) {
+      messages.push({
+        suid: item.id,
+        // backend does not care about Date objects
+        date: item.date.valueOf()
+      });
+    }
+  }
+
+  if (!messages.length)
+    return callback && window.setZeroTimeout(callback, false);
+
+  var reqId = this._snippetRequestId++;
+  this._snippetRequests[reqId] = callback;
+
+  this._api.__bridgeSend({
+    type: 'requestSnippets',
+    handle: this._handle,
+    requestId: reqId,
+    messages: messages
+  });
 };
 
 
@@ -969,6 +1074,13 @@ MessageComposition.prototype = {
     };
   },
 
+  die: function() {
+    if (this._handle) {
+      this._api._composeDone(this._handle, 'die', null, null);
+      this._handle = null;
+    }
+  },
+
   /**
    * Add custom headers; don't use this for built-in headers.
    */
@@ -982,7 +1094,7 @@ MessageComposition.prototype = {
   /**
    * @args[
    *   @param[attachmentDef @dict[
-   *     @key[fileName String]
+   *     @key[name String]
    *     @key[blob Blob]
    *   ]]
    * ]
@@ -1052,11 +1164,11 @@ MessageComposition.prototype = {
   },
 
   /**
-   * The user is done writing the message for now; save it to the drafts folder
-   * and close out this handle.
+   * Save the state of this composition.
    */
-  saveDraftEndComposition: function() {
-    this._api._composeDone(this._handle, 'save', this._buildWireRep());
+  saveDraft: function(callback) {
+    this._api._composeDone(this._handle, 'save', this._buildWireRep(),
+                           callback);
   },
 
   /**
@@ -1067,14 +1179,14 @@ MessageComposition.prototype = {
    * functionality, possibly on the UI side of the house.  This is not a secure
    * delete.
    */
-  abortCompositionDeleteDraft: function() {
-    this._api._composeDone(this._handle, 'delete', null);
+  abortCompositionDeleteDraft: function(callback) {
+    this._api._composeDone(this._handle, 'delete', null, callback);
   },
 
 };
 
 
-const LEGAL_CONFIG_KEYS = ['syncCheckIntervalEnum'];
+var LEGAL_CONFIG_KEYS = ['syncCheckIntervalEnum'];
 
 /**
  * Error reporting helper; we will probably eventually want different behaviours
@@ -1097,6 +1209,64 @@ var unexpectedBridgeDataError = reportError,
     internalError = reportError,
     reportClientCodeError = reportError;
 
+
+// Common idioms:
+//
+// Lead-in (URL and email):
+// (                     Capture because we need to know if there was a lead-in
+//                       character so we can include it as part of the text
+//                       preceding the match.  We lack look-behind matching.
+//  ^|                   The URL/email can start at the beginninf of the string.
+//  [\s(,;]              Or whitespace or some punctuation that does not imply
+//                       a context which would preclude a URL.
+// )
+//
+// We do not need a trailing look-ahead because our regex's will terminate
+// because they run out of characters they can eat.
+
+// What we do not attempt to have the regexp do:
+// - Avoid trailing '.' and ')' characters.  We let our greedy match absorb
+//   these, but have a separate regex for extra characters to leave off at the
+//   end.
+//
+// The Regex (apart from lead-in/lead-out):
+// (                     Begin capture of the URL
+//  (?:                  (potential detect beginnings)
+//   https?:\/\/|        Start with "http" or "https"
+//   www\d{0,3}[.][a-z0-9.\-]{2,249}|
+//                      Start with "www", up to 3 numbers, then "." then
+//                       something that looks domain-namey.  We differ from the
+//                       next case in that we do not constrain the top-level
+//                       domain as tightly and do not require a trailing path
+//                       indicator of "/".
+//   [a-z0-9.\-]{2,250}[.][a-z]{2,4}\/
+//                       Detect a non-www domain, but requiring a trailing "/"
+//                       to indicate a path.
+//
+//                       Domain names can be up to 253 characters long, and are
+//                       limited to a-zA-Z0-9 and '-'.  The roots don't have
+//                       hyphens.
+//  )
+//  [-\w.!~*'();,/?:@&=+$#%]*
+//                       path onwards. We allow the set of characters that
+//                       encodeURI does not escape plus the result of escaping
+//                       (so also '%')
+// )
+var RE_URL =
+  /(^|[\s(,;])((?:https?:\/\/|www\d{0,3}[.][a-z0-9.\-]{2,249}|[a-z0-9.\-]{2,250}[.][a-z]{2,4}\/)[-\w.!~*'();,/?:@&=+$#%]*)/im;
+// Set of terminators that are likely to have been part of the context rather
+// than part of the URL and so should be uneaten.  This is the same as our
+// mirror lead-in set (so '(', ',', ';') plus question end-ing punctuation and
+// the potential permutations with parentheses (english-specific)
+var RE_UNEAT_LAST_URL_CHARS = /(?:[),;.!?]|[.!?]\)|\)[.!?])$/;
+// Don't require the trailing slashes here for pre-pending purposes, although
+// our above regex currently requires them.
+var RE_HTTP = /^https?:/i;
+// Note: the [^\s] is fairly international friendly, but might be too friendly.
+var RE_MAIL =
+  /(^|[\s(,;])([^(,;@\s]+@[^.\s]+.[a-z]+)/m;
+var RE_MAILTO = /^mailto:/i;
+
 var MailUtils = {
 
   /**
@@ -1104,44 +1274,55 @@ var MailUtils = {
    */
   linkifyPlain: function(body, doc) {
     var nodes = [];
-    var match = true;
+    var match = true, contentStart;
     while (true) {
-      var url =
-        body.match(/^([\s\S]*?)(^|\s)((?:https?:\/\/|www\d{0,3}[.]|[a-z0-9.\-]+[.][a-z]{2,4}\/)(?:[^\s()<>]+|\(([^\s()<>]+|(\([^\s()<>]+\)))*\))+(?:\(([^\s()<>]+|(\([^\s()<>]+\)))*\)|[^\s`!()\[\]{};:'".,<>?«»“”‘’]))/im);
-      var email =
-        body.match(/^([\s\S]*?)(^|\s)([^@\s]+@[^.\s]+.[a-z]+)($|\s)/m);
+      var url = RE_URL.exec(body);
+      var email = RE_MAIL.exec(body);
       // Pick the regexp with the earlier content; index will always be zero.
       if (url &&
-          (!email || url[1].length < email[1].length)) {
-        var first = url[1] + url[2];
-        if (first.length > 0)
-          nodes.push(doc.createTextNode(first));
+          (!email || url.index < email.index)) {
+        contentStart = url.index + url[1].length;
+        if (contentStart > 0)
+          nodes.push(doc.createTextNode(body.substring(0, contentStart)));
+
+        // There are some final characters for a URL that are much more likely
+        // to have been part of the enclosing text rather than the end of the
+        // URL.
+        var useUrl = url[2];
+        var uneat = RE_UNEAT_LAST_URL_CHARS.exec(useUrl);
+        if (uneat) {
+          useUrl = useUrl.substring(0, uneat.index);
+        }
 
         var link = doc.createElement('a');
         link.className = 'moz-external-link';
-        link.setAttribute('ext-href', url[3]);
-        var text = doc.createTextNode(url[3]);
+        // the browser app needs us to put a protocol on the front
+        if (RE_HTTP.test(url[2]))
+          link.setAttribute('ext-href', useUrl);
+        else
+          link.setAttribute('ext-href', 'http://' + useUrl);
+        var text = doc.createTextNode(useUrl);
         link.appendChild(text);
         nodes.push(link);
 
-        body = body.substring(url[0].length);
+        body = body.substring(url.index + url[1].length + useUrl.length);
       }
       else if (email) {
-        first = email[1] + email[2];
-        if (first.length > 0)
-          nodes.push(doc.createTextNode(first));
+        contentStart = email.index + email[1].length;
+        if (contentStart > 0)
+          nodes.push(doc.createTextNode(body.substring(0, contentStart)));
 
         link = doc.createElement('a');
         link.className = 'moz-external-link';
-        if (/^mailto:/.test(email[3]))
-          link.setAttribute('ext-href', email[3]);
+        if (RE_MAILTO.test(email[2]))
+          link.setAttribute('ext-href', email[2]);
         else
-          link.setAttribute('ext-href', 'mailto:' + email[3]);
-        text = doc.createTextNode(email[3]);
+          link.setAttribute('ext-href', 'mailto:' + email[2]);
+        text = doc.createTextNode(email[2]);
         link.appendChild(text);
         nodes.push(link);
 
-        body = body.substring(email[0].length - email[4].length);
+        body = body.substring(email.index + email[0].length);
       }
       else {
         break;
@@ -1190,6 +1371,7 @@ function MailAPI() {
 
   this._slices = {};
   this._pendingRequests = {};
+  this._liveBodies = {};
 
   /**
    * @dict[
@@ -1333,6 +1515,7 @@ MailAPI.prototype = {
     // - generate namespace-specific notifications
     slice.atTop = msg.atTop;
     slice.atBottom = msg.atBottom;
+    slice.userCanGrowUpwards = msg.userCanGrowUpwards;
     slice.userCanGrowDownwards = msg.userCanGrowDownwards;
     if (msg.status &&
         (slice.status !== msg.status ||
@@ -1443,18 +1626,26 @@ MailAPI.prototype = {
     slice.ondead = null;
   },
 
-  _getBodyForMessage: function(header, callback) {
+  _getBodyForMessage: function(header, options, callback) {
+
+    var downloadBodyReps = false;
+
+    if (options && options.downloadBodyReps) {
+      downloadBodyReps = options.downloadBodyReps;
+    }
+
     var handle = this._nextHandle++;
     this._pendingRequests[handle] = {
       type: 'getBody',
       suid: header.id,
-      callback: callback,
+      callback: callback
     };
     this.__bridgeSend({
       type: 'getBody',
       handle: handle,
       suid: header.id,
       date: header.date.valueOf(),
+      downloadBodyReps: downloadBodyReps
     });
   },
 
@@ -1466,8 +1657,58 @@ MailAPI.prototype = {
     }
     delete this._pendingRequests[msg.handle];
 
-    var body = msg.bodyInfo ? new MailBody(this, req.suid, msg.bodyInfo) : null;
+    var body = msg.bodyInfo ?
+      new MailBody(this, req.suid, msg.bodyInfo, msg.handle) :
+      null;
+
+    if (body) {
+      this._liveBodies[msg.handle] = body;
+    }
+
     req.callback.call(null, body);
+  },
+
+  _recv_requestSnippetsComplete: function(msg) {
+    var slice = this._slices[msg.handle];
+    // The slice may be dead now!
+    if (slice)
+      slice._notifyRequestSnippetsComplete(msg.requestId);
+  },
+
+  _recv_bodyModified: function(msg) {
+    var body = this._liveBodies[msg.handle];
+
+    if (!body) {
+      unexpectedBridgeDataError('body modified for dead handle', msg.handle);
+      // possible but very unlikely race condition where body is modified while
+      // we are removing the reference to the observer...
+      return;
+    }
+
+    if (body.onchange) {
+      // there may be many kinds of updates we want to support but we only
+      // support updating the bodyReps reference currently.
+      switch (msg.detail.changeType) {
+        case 'bodyReps':
+          body.bodyReps = msg.bodyInfo.bodyReps;
+          break;
+      }
+
+      body.onchange(
+        msg.detail,
+        msg.bodyInfo
+      );
+    }
+  },
+
+  _recv_bodyDead: function(msg) {
+    var body = this._liveBodies[msg.handle];
+
+    if (body && body.ondead) {
+      body.ondead();
+    }
+
+    delete this._liveBodies[msg.handle];
   },
 
   _downloadAttachments: function(body, relPartIndices, attachmentIndices,
@@ -1792,7 +2033,7 @@ MailAPI.prototype = {
   searchFolderMessages:
       function ma_searchFolderMessages(folder, text, whatToSearch) {
     var handle = this._nextHandle++,
-        slice = new BridgedViewSlice(this, 'matchedHeaders', handle);
+        slice = new HeadersViewSlice(this, handle, 'matchedHeaders');
     // the initial population counts as a request.
     slice.pendingRequestCount++;
     this._slices[handle] = slice;
@@ -2050,7 +2291,26 @@ MailAPI.prototype = {
    * move may be performed instead.)
    */
   resumeMessageComposition: function(message, callback) {
-    throw new Error('XXX No resuming composition right now.  Sorry!');
+    if (!callback)
+      throw new Error('A callback must be provided; you are using the API ' +
+                      'wrong if you do not.');
+
+    var handle = this._nextHandle++,
+        composer = new MessageComposition(this, handle);
+
+    this._pendingRequests[handle] = {
+      type: 'compose',
+      composer: composer,
+      callback: callback,
+    };
+
+    this.__bridgeSend({
+      type: 'resumeCompose',
+      handle: handle,
+      messageNamer: serializeMessageName(message)
+    });
+
+    return composer;
   },
 
   _recv_composeBegun: function(msg) {
@@ -2077,23 +2337,15 @@ MailAPI.prototype = {
   },
 
   _composeDone: function(handle, command, state, callback) {
+    if (!handle)
+      return;
     var req = this._pendingRequests[handle];
     if (!req) {
-      unexpectedBridgeDataError('Bad handle for compose done:', handle);
       return;
     }
-    switch (command) {
-      case 'send':
-        req.type = 'send';
-        req.callback = callback;
-        break;
-      case 'save':
-      case 'delete':
-        delete this._pendingRequests[handle];
-        break;
-      default:
-        throw new Error('Illegal composeDone command: ' + command);
-    }
+    req.type = command;
+    if (callback)
+      req.callback = callback;
     this.__bridgeSend({
       type: 'doneCompose',
       handle: handle,
@@ -2102,14 +2354,15 @@ MailAPI.prototype = {
     });
   },
 
-  _recv_sent: function(msg) {
+  _recv_doneCompose: function(msg) {
     var req = this._pendingRequests[msg.handle];
     if (!req) {
-      unexpectedBridgeDataError('Bad handle for sent:', msg.handle);
+      unexpectedBridgeDataError('Bad handle for doneCompose:', msg.handle);
       return;
     }
-    // Only delete the request if the send succeeded.
-    if (!msg.err)
+    req.active = null;
+    // Do not cleanup on saves. Do cleanup on successful send, delete, die.
+    if (req.type === 'die' || (!msg.err && (req.type !== 'save')))
       delete this._pendingRequests[msg.handle];
     if (req.callback) {
       req.callback.call(null, msg.err, msg.badAddresses, msg.sentDate);
@@ -2231,6 +2484,5 @@ MailAPI.prototype = {
 
   //////////////////////////////////////////////////////////////////////////////
 };
-
 
 }); // end define

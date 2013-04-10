@@ -434,7 +434,7 @@ TestLogProtoBase.__die = function() {
   }
 };
 
-const DIED_EVENTNAME = '(died)', DIED_EXP = [DIED_EVENTNAME];
+var DIED_EVENTNAME = '(died)', DIED_EXP = [DIED_EVENTNAME];
 
 var TestActorProtoBase = {
   toString: function() {
@@ -761,8 +761,12 @@ var TestActorProtoBase = {
           (entries.length > this._iEntry)) ||
          (!this._expectations.length &&
           this._expectNothing))) {
-      this._expectationsMetSoFar = false;
-      this._logger.__unexpectedEntry(this._iEntry, entries[this._iEntry]);
+      // Only get upset if this is not an ignored event.
+      if (!this._ignore ||
+          !this._ignore.hasOwnProperty(entries[this._iEntry][0])) {
+        this._expectationsMetSoFar = false;
+        this._logger.__unexpectedEntry(this._iEntry, entries[this._iEntry]);
+      }
       // We intentionally increment iEntry because otherwise we'll keep marking
       // the same entry as unexpected when that is in fact not what we desire.
       // In previous parts of this function it made sense not to increment, but
@@ -796,7 +800,7 @@ function simplifyInsaneObjects(obj, dtype, curDepth) {
     return obj;
   if (!curDepth)
     curDepth = 0;
-  const nextDepth = curDepth + 1;
+  var nextDepth = curDepth + 1;
   var limitStrings = 64;
 
   if (dtype) {
@@ -845,7 +849,7 @@ function simplifyInsaneObjects(obj, dtype, curDepth) {
  *  This value gets bumped every time I throw something at it that fails that
  *  still seems reasonable to me.
  */
-const COMPARE_DEPTH = 6;
+var COMPARE_DEPTH = 6;
 function boundedCmpObjs(a, b, depthLeft) {
   var aAttrCount = 0, bAttrCount = 0, key, nextDepth = depthLeft - 1;
 
@@ -1679,11 +1683,12 @@ var ALL_KNOWN_FABS = [];
  * without a known consumer.
  */
 var GENERAL_LOG_DEFAULT = false;
+var UNDER_TEST_DEFAULT = false;
 
 exports.register = function register(mod, defs) {
   var fab = {
     _generalLog: GENERAL_LOG_DEFAULT,
-    _underTest: false,
+    _underTest: UNDER_TEST_DEFAULT,
     _actorCons: {},
     _rawDefs: {},
     _onDeath: null
@@ -1735,6 +1740,7 @@ exports.enableGeneralLogging = function() {
  *  shouldn't do that.
  */
 exports.DEBUG_markAllFabsUnderTest = function() {
+  UNDER_TEST_DEFAULT = BogusTester;
   for (var i = 0; i < ALL_KNOWN_FABS.length; i++) {
     var logfab = ALL_KNOWN_FABS[i];
 
@@ -1772,6 +1778,7 @@ exports.DATABASE = 'database';
 exports.CRYPTO = 'crypto';
 exports.QUERY = 'query';
 exports.ACCOUNT = 'account';
+exports.LOGGING = 'log';
 
 exports.TEST_DRIVER = 'testdriver';
 exports.TEST_GROUP = 'testgroup';

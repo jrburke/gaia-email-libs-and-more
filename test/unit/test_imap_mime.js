@@ -8,9 +8,11 @@
  * - the (external) bleach.js lib
  **/
 
-load('resources/loggest_test_framework.js');
+define(['rdcommon/testcontext', 'mailapi/testhelper',
+        './resources/messageGenerator', 'exports'],
+       function($tc, $th_imap, $msggen, exports) {
 
-var TD = $tc.defineTestsFor(
+var TD = exports.TD = $tc.defineTestsFor(
   { id: 'test_imap_mime' }, null, [$th_imap.TESTHELPER], ['app']);
 
 // The example string comes from wikipedia, and it now seems to be a popular
@@ -66,10 +68,13 @@ TD.commonCase('message encodings', function(T) {
         b64TruthBeauty
       ]
     });
+
   var folderView = testAccount.do_openFolderView(
     'syncs', fullSyncFolder,
     { count: 2, full: 2, flags: 0, deleted: 0 },
-    { top: true, bottom: true, grow: false });
+    { top: true, bottom: true, grow: false },
+    { syncedToDawnOfTime: true });
+
   T.check('check messages', eBodies, function() {
     eBodies.expect_namedValue('from name', rawSammySnake);
     eBodies.expect_namedValue('to[0] name', rawSammySnake);
@@ -81,17 +86,21 @@ TD.commonCase('message encodings', function(T) {
 
     var qpHeader = folderView.slice.items[0],
         b64Header = folderView.slice.items[1];
+
     eBodies.namedValue('from name', qpHeader.author.name);
-    qpHeader.getBody(function(qpBody) {
-    eBodies.namedValue('to[0] name', qpBody.to[0].name);
-    eBodies.namedValue('to[1] name', qpBody.to[1].name);
-    eBodies.namedValue('to[2] name', qpBody.to[2].name);
-    eBodies.namedValue('cc[0] name', qpBody.cc[0].name);
-      eBodies.namedValue('qp', qpBody.bodyReps[1][1]);
+
+    eBodies.namedValue('to[0] name', qpHeader.to[0].name);
+    eBodies.namedValue('to[1] name', qpHeader.to[1].name);
+    eBodies.namedValue('to[2] name', qpHeader.to[2].name);
+    eBodies.namedValue('cc[0] name', qpHeader.cc[0].name);
+
+    testAccount.getMessageBodyWithReps(qpHeader, function(qpBody) {
+      eBodies.namedValue('qp', qpBody.bodyReps[0].content[1]);
       qpBody.die();
     });
-    b64Header.getBody(function(b64Body) {
-      eBodies.namedValue('b64', b64Body.bodyReps[1][1]);
+
+    testAccount.getMessageBodyWithReps(b64Header, function(b64Body) {
+      eBodies.namedValue('b64', b64Body.bodyReps[0].content[1]);
       b64Body.die();
     });
   });
@@ -106,6 +115,9 @@ TD.commonCase('message encodings', function(T) {
  * us, differing from what gloda's time_mime_emitter.js checks.
  */
 TD.commonCase('MIME hierarchies', function(T) {
+  var SyntheticPartLeaf = $msggen.SyntheticPartLeaf,
+      SyntheticPartMultiAlternative = $msggen.SyntheticPartMultiAlternative;
+
   // -- pieces
   var
   // - bodies: text/plain
@@ -169,6 +181,11 @@ TD.commonCase('MIME hierarchies', function(T) {
           { contentType: 'text/enriched' }),
 
   // - bodies: text/html
+      bstrEmptyHtml = '',
+      bpartEmptyHtml =
+        new SyntheticPartLeaf(
+          bstrEmptyHtml, { contentType: 'text/html' }),
+      bstrSanitizedEmptyHtml = '',
       bstrTrivialHtml =
         '<html><head></head><body>I am HTML! Woo!</body></html>',
       bstrSanitizedTrivialHtml =
@@ -208,6 +225,73 @@ TD.commonCase('MIME hierarchies', function(T) {
       bpartStyleHtml =
         new SyntheticPartLeaf(
           bstrStyleHtml, { contentType: 'text/html' }),
+      bstrForwardedHtml = [
+        '<html>',
+        '  <head>',
+        '',
+        '    <meta http-equiv="content-type" content="text/html; charset=UTF-8">',
+        '  </head>',
+        '  <body text="#000000" bgcolor="#FFFFFF">',
+        '    <br>',
+        '    <div class="moz-forward-container"><br>',
+        '      <br>',
+        '      -------- Original Message --------',
+        '      <table class="moz-email-headers-table" border="0" cellpadding="0"',
+        '        cellspacing="0">',
+        '        <tbody>',
+        '          <tr>',
+        '            <th nowrap="nowrap" valign="BASELINE" align="RIGHT">Date: </th>',
+        '            <td>Wed, 30 Jan 2013 18:01:02 +0530</td>',
+        '          </tr>',
+        '          <tr>',
+        '            <th nowrap="nowrap" valign="BASELINE" align="RIGHT">From: </th>',
+        '            <td>Foo Bar <a class="moz-txt-link-rfc2396E" href="mailto:foo@example.com">&lt;foo@example.com&gt;</a></td>',
+        '          </tr>',
+        '        </tbody>',
+        '      </table>',
+        '      <br>',
+        '      <br>',
+        '      <br>',
+        '    </div>',
+        '    <br>',
+        '  </body>',
+        '</html>'].join('\n'),
+      bstrSanitizedForwardedHtml = [
+        '',
+        '  ',
+        '',
+        '    ',
+        '  ',
+        '  ',
+        '    <br/>',
+        '    <div class="moz-forward-container"><br/>',
+        '      <br/>',
+        '      -------- Original Message --------',
+        '      <table class="moz-email-headers-table" border="0" cellpadding="0" cellspacing="0">',
+        '        <tbody>',
+        '          <tr>',
+        '            <th nowrap="nowrap" valign="BASELINE" align="RIGHT">Date: </th>',
+        '            <td>Wed, 30 Jan 2013 18:01:02 +0530</td>',
+        '          </tr>',
+        '          <tr>',
+        '            <th nowrap="nowrap" valign="BASELINE" align="RIGHT">From: </th>',
+        '            <td>Foo Bar <a class="moz-txt-link-rfc2396E moz-external-link" ext-href="mailto:foo@example.com">&lt;foo@example.com&gt;</a></td>',
+        '          </tr>',
+        '        </tbody>',
+        '      </table>',
+        '      <br/>',
+        '      <br/>',
+        '      <br/>',
+        '    </div>',
+        '    <br/>',
+        '  ',
+        ''].join('\n'),
+      bpartForwardedHtml =
+        new SyntheticPartLeaf(
+          bstrForwardedHtml, { contentType: 'text/html' }),
+      // we can't get a snippet out of the above that's useful.
+      snipForwardedHtml = '',
+
 
   // - multipart/alternative where text/plain should be chosen
       alternStraight =
@@ -310,6 +394,11 @@ TD.commonCase('MIME hierarchies', function(T) {
     },
     // - text/html
     {
+      name: 'text/html empty',
+      bodyPart: bpartEmptyHtml,
+      checkBody: bstrEmptyHtml,
+    },
+    {
       name: 'text/html trivial (sanitized to just text)',
       bodyPart: bpartTrivialHtml,
       checkBody: bstrSanitizedTrivialHtml,
@@ -332,6 +421,12 @@ TD.commonCase('MIME hierarchies', function(T) {
       bodyPart: bpartStyleHtml,
       checkBody: bstrSanitizedStyleHtml,
       checkSnippet: snipStyleHtml,
+    },
+    {
+      name: 'text/html thunderbird forwarded',
+      bodyPart: bpartForwardedHtml,
+      checkBody: bstrSanitizedForwardedHtml,
+      checkSnippet: snipForwardedHtml,
     },
     // - alternative chooses text/html
     {
@@ -370,7 +465,7 @@ TD.commonCase('MIME hierarchies', function(T) {
   var fullSyncFolder = testAccount.do_createTestFolder(
     'test_mime_hier', function makeMessages() {
     var messageAppends = [],
-        msgGen = new MessageGenerator(testUniverse._useDate);
+        msgGen = new $msggen.MessageGenerator(testUniverse._useDate);
 
     for (var i = 0; i < testMessages.length; i++) {
       var msgDef = testMessages[i];
@@ -386,13 +481,14 @@ TD.commonCase('MIME hierarchies', function(T) {
     }
 
     return messageAppends;
-  });
+  }, { messageCount: testMessages.length }); // give count for timeout purposes
   // -- open the folder
   var folderView = testAccount.do_openFolderView(
     'syncs', fullSyncFolder,
     { count: testMessages.length, full: testMessages.length, flags: 0,
       deleted: 0 },
-    { top: true, bottom: true, grow: false });
+    { top: true, bottom: true, grow: false },
+    { syncedToDawnOfTime: true });
   // -- check each message in its own step
   testMessages.forEach(function checkMessage(msgDef, iMsg) {
     T.check(eCheck, msgDef.name, function() {
@@ -409,14 +505,23 @@ TD.commonCase('MIME hierarchies', function(T) {
       }
 
       var header = folderView.slice.items[iMsg];
-      header.getBody(function(body) {
+      testAccount.getMessageBodyWithReps(header, function(body) {
+
         var bodyValue;
-        if (!body.bodyReps.length)
+        if (!body.bodyReps.length) {
           bodyValue = '';
-        else if (body.bodyReps[0] === 'plain')
-          bodyValue = body.bodyReps[1][1] || '';
-        else if (body.bodyReps[0] === 'html')
-          bodyValue = body.bodyReps[1];
+        }
+        else if (body.bodyReps[0].type === 'plain') {
+          if (!body.bodyReps[0].content) {
+            bodyValue = '';
+          } else {
+            bodyValue = body.bodyReps[0].content[1] || '';
+          }
+        }
+        else if (body.bodyReps[0].type === 'html') {
+          bodyValue = body.bodyReps[0].content;
+        }
+
         eCheck.namedValue('body', bodyValue);
         if (msgDef.checkSnippet)
           eCheck.namedValue('snippet', header.snippet);
@@ -435,6 +540,4 @@ TD.commonCase('MIME hierarchies', function(T) {
   T.group('cleanup');
 });
 
-function run_test() {
-  runMyTests(5);
-}
+}); // end define

@@ -1,34 +1,12 @@
 /*jslint node: true, nomen: true, evil: true, indent: 2*/
 'use strict';
 
-var jsPath, currentConfig, indexPath,
+var jsPath, currentConfig, indexPath, buildOptions,
   requirejs = require('./r'),
   fs = require('fs'),
   path = require('path'),
   exists = fs.existsSync || path.existsSync,
-  buildOptions = eval(fs.readFileSync(__dirname + '/gaia-email-opt.build.js', 'utf8')),
-  oldBuildWrite = buildOptions.onBuildWrite,
-  dest = process.argv[2],
-  layerPaths = {},
-  layerTexts = {},
-  scriptUrls = {};
-
-
-function mkdir(id, otherPath) {
-  var current,
-    parts = id.split('/');
-
-  // Pop off the last part, it is the file name.
-  parts.pop();
-
-  parts.forEach(function (part, i) {
-    current = path.join.apply(path,
-              (otherPath ? [otherPath] : []).concat(parts.slice(0, i + 1)));
-    if (!exists(current)) {
-      fs.mkdirSync(current, 511);
-    }
-  });
-}
+  dest = process.argv[2];
 
 if (!dest || !exists(dest)) {
   console.log('Pass path to gaia destination (should be the apps/email dir ' +
@@ -39,60 +17,168 @@ if (!dest || !exists(dest)) {
 jsPath = path.join(dest, 'js', 'ext');
 indexPath = path.join(dest, 'index.html');
 
-// Modify build options to do the file spray
-buildOptions._layerName = 'same-frame-setup';
-buildOptions.baseUrl = path.join(__dirname, '..');
-buildOptions.wrap.startFile = path.join(__dirname, buildOptions.wrap.startFile);
-buildOptions.wrap.endFile = path.join(__dirname, buildOptions.wrap.endFile);
-buildOptions.out = function () { /* ignored */ };
-buildOptions.onBuildWrite = function (id, modulePath, contents) {
-  var finalPath = path.join(jsPath, id + '.js'),
-      layerName = currentConfig._layerName;
+buildOptions = {
+  baseUrl: path.join(__dirname, '..'),
+  optimize: 'none', //'uglify',
+  //Keep any "use strict" in the built code.
+  useStrict: true,
+  paths: {
+    'alameda': 'deps/alameda',
+    'config': 'scripts/config',
 
-  if (id === currentConfig.name) {
-    layerPaths[currentConfig._layerName] = finalPath;
+    // NOP's
+    'prim': 'empty:',
+    'http': 'data/lib/nop',
+    'https': 'data/lib/nop2',
+    'url': 'data/lib/nop3',
+    'fs': 'data/lib/nop4',
+    'xoauth2': 'data/lib/nop6',
+
+    'q': 'empty:',
+    'text': 'data/lib/text',
+    // silly shim
+    'event-queue': 'data/lib/js-shims/event-queue',
+    'microtime': 'data/lib/js-shims/microtime',
+    'path': 'data/lib/js-shims/path',
+
+    'wbxml': 'deps/activesync/wbxml/wbxml',
+    'activesync': 'deps/activesync',
+
+    'bleach': 'deps/bleach.js/lib/bleach',
+
+    'imap': 'data/lib/imap',
+
+    'rdplat': 'data/lib/rdplat',
+    'rdcommon': 'data/lib/rdcommon',
+    'mailapi': 'data/lib/mailapi',
+
+    'buffer': 'data/lib/node-buffer',
+    'crypto': 'data/lib/node-crypto',
+    'net': 'data/lib/node-net',
+    'tls': 'data/lib/node-tls',
+    'os': 'data/lib/node-os',
+
+    'iconv': 'data/lib/js-shims/faux-iconv',
+    'iconv-lite': 'data/libs/js-shims/faux-iconx',
+    'encoding': 'data/lib/js-shims/faux-encoding',
+
+    'assert': 'data/deps/browserify-builtins/assert',
+    'events': 'data/deps/browserify-builtins/events',
+    'stream': 'data/deps/browserify-builtins/stream',
+    'util': 'data/deps/browserify-builtins/util',
+
+    // These used to be packages but we have AMD shims for their mains where
+    // appropriate, so we can just use paths.
+    'addressparser': 'data/deps/addressparser',
+    'mimelib': 'data/deps/mimelib',
+    'mailparser': 'data/deps/mailparser/lib',
+    'simplesmtp': 'data/deps/simplesmtp',
+    'mailcomposer': 'data/deps/mailcomposer'
   }
-
-  if (!scriptUrls[layerName]) {
-    scriptUrls[layerName] = [];
-  }
-
-  scriptUrls[layerName].push('js/ext/' + id + '.js');
-
-  contents = oldBuildWrite(id, modulePath, contents);
-
-  // A rollup secondary layer
-  if (!layerTexts.hasOwnProperty(layerName)) {
-    layerTexts[layerName] = '';
-  }
-  layerTexts[layerName] += contents + '\n';
-
-  // No need to return contents, since we are not going to save it to an
-  // optimized file.
 };
 
-var standardExcludes = ['mailapi/same-frame-setup'].concat(buildOptions.include);
+var bootstrapIncludes = ['alameda', 'config', 'mailapi/shim-sham',
+  'event-queue', 'mailapi/mailslice', 'mailapi/searchfilter',
+  'mailapi/jobmixins', 'mailapi/accountmixins', 'util', 'stream', 'crypto',
+  'encoding', 'mailapi/worker-setup'];
+var standardExcludes = [].concat(bootstrapIncludes);
+var standardPlusComposerExcludes = ['mailapi/composer'].concat(standardExcludes);
 
 var configs = [
-  // First one is same-frame-setup
-  {},
+  {
+    name: 'mailapi/worker-bootstrap',
+    include: bootstrapIncludes,
+    insertRequire: ['mailapi/worker-setup'],
+    out: jsPath + '/mailapi/worker-bootstrap.js'
+  },
+
+  {
+    name: 'mailapi/main-frame-setup',
+    include: [],
+    out: jsPath + '/mailapi/main-frame-setup.js'
+  },
+
+  {
+    name: 'mimelib',
+    exclude: standardExcludes,
+    out: jsPath + '/mimelib.js'
+  },
+
+  {
+    name: 'mailapi/chewlayer',
+    create: true,
+    include: ['mailapi/quotechew', 'mailapi/htmlchew', 'mailapi/imap/imapchew'],
+    exclude: standardExcludes,
+    out: jsPath + '/mailapi/chewlayer.js'
+  },
+
+  {
+    name: 'mailparser/mailparser',
+    exclude: standardExcludes.concat(['mimelib']),
+    out: jsPath + '/mailparser/mailparser.js'
+  },
+
+  {
+    name: 'mailapi/composer',
+    exclude: standardExcludes.concat(['mailparser/mailparser',
+                                      'mailapi/quotechew',
+                                      'mailapi/htmlchew',
+                                      'mailapi/imap/imapchew',
+                                      'mimelib']),
+    out: jsPath + '/mailapi/composer.js'
+  },
+
+  {
+    name: 'mailapi/imap/probe',
+    exclude: standardPlusComposerExcludes.concat(['mailparser/mailparser']),
+    out: jsPath + '/mailapi/imap/probe.js'
+  },
+
+  {
+    name: 'mailapi/imap/protocollayer',
+    exclude: standardPlusComposerExcludes.concat(
+      ['mailparser/mailparser', 'mimelib', 'mailapi/imap/imapchew']
+    ),
+    include: [
+      'mailapi/imap/protocol/sync',
+      'mailapi/imap/protocol/bodyfetcher',
+      'mailapi/imap/protocol/textparser',
+      'mailapi/imap/protocol/snippetparser'
+    ],
+    out: jsPath + '/mailapi/imap/protocollayer.js',
+    create: true
+  },
+
+  {
+    name: 'mailapi/smtp/probe',
+    exclude: standardPlusComposerExcludes,
+    out: jsPath + '/mailapi/smtp/probe.js'
+  },
 
   {
     name: 'mailapi/activesync/configurator',
-    exclude: standardExcludes,
-    _layerName: 'activesync'
+    exclude: standardPlusComposerExcludes,
+    out: jsPath + '/mailapi/activesync/configurator.js'
+  },
+
+  {
+    name: 'mailapi/activesync/protocollayer',
+    create: true,
+    include: ['wbxml', 'activesync/protocol'],
+    exclude: standardExcludes.concat(['mailapi/activesync/configurator']),
+    out: jsPath + '/mailapi/activesync/protocollayer.js'
   },
 
   {
     name: 'mailapi/composite/configurator',
-    exclude: standardExcludes,
-    _layerName: 'composite'
+    exclude: standardPlusComposerExcludes,
+    out: jsPath + '/mailapi/composite/configurator.js'
   },
 
   {
     name: 'mailapi/fake/configurator',
-    exclude: standardExcludes,
-    _layerName: 'fake'
+    exclude: standardPlusComposerExcludes,
+    out: jsPath + '/mailapi/fake/configurator.js'
   }
 ];
 
@@ -115,26 +201,15 @@ function onError(err) {
 //in the configs array.
 var runner = configs.reduceRight(function (prev, cfg) {
   return function (buildReportText) {
+    if (buildReportText)
+      console.log(buildReportText);
+
     currentConfig = mix(cfg);
 
     requirejs.optimize(currentConfig, prev, onError);
   };
 }, function (buildReportText) {
-  try {
-    // To see how the layers were partitioned, uncomment
-    console.log(scriptUrls);
-
-    // Write out secondary rollups to gaia directory.
-    for (var prop in layerPaths) {
-      if (layerPaths.hasOwnProperty(prop) && prop !== 'main') {
-        mkdir(layerPaths[prop]);
-        fs.writeFileSync(layerPaths[prop], layerTexts[prop], 'utf8');
-      }
-    }
-  } catch (e) {
-    console.error(e);
-    process.exit(1);
-  }
+  console.log(buildReportText);
 });
 
 //Run the builds

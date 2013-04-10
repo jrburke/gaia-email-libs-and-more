@@ -80,34 +80,34 @@ define(
 /**
  * The evidence suggests the job has not yet been performed.
  */
-const CHECKED_NOTYET = 'checked-notyet';
+var CHECKED_NOTYET = 'checked-notyet';
 /**
  * The operation is idempotent and atomic, just perform the operation again.
  * No checking performed.
  */
-const UNCHECKED_IDEMPOTENT = 'idempotent';
+var UNCHECKED_IDEMPOTENT = 'idempotent';
 /**
  * The evidence suggests that the job has already happened.
  */
-const CHECKED_HAPPENED = 'happened';
+var CHECKED_HAPPENED = 'happened';
 /**
  * The job is no longer relevant because some other sequence of events
  * have mooted it.  For example, we can't change tags on a deleted message
  * or move a message between two folders if it's in neither folder.
  */
-const CHECKED_MOOT = 'moot';
+var CHECKED_MOOT = 'moot';
 /**
  * A transient error (from the checker's perspective) made it impossible to
  * check.
  */
-const UNCHECKED_BAILED = 'bailed';
+var UNCHECKED_BAILED = 'bailed';
 /**
  * The job has not yet been performed, and the evidence is that the job was
  * not marked finished because our database commits are coherent.  This is
  * appropriate for retrieval of information, like the downloading of
  * attachments.
  */
-const UNCHECKED_COHERENT_NOTYET = 'coherent-notyet';
+var UNCHECKED_COHERENT_NOTYET = 'coherent-notyet';
 
 /**
  * @typedef[MutationState @dict[
@@ -217,18 +217,38 @@ ImapJobDriver.prototype = {
     var storage = this.account.getFolderStorageForFolderId(folderId),
         self = this;
     storage.runMutexed(label, function(releaseMutex) {
-      self._heldMutexReleasers.push(releaseMutex);
       var syncer = storage.folderSyncer;
-      if (needConn && !syncer.folderConn._conn) {
-        syncer.folderConn.acquireConn(callback, deathback, label);
-      }
-      else {
+      var action = function () {
+        self._heldMutexReleasers.push(releaseMutex);
         try {
           callback(syncer.folderConn, storage);
         }
         catch (ex) {
           self._LOG.callbackErr(ex);
         }
+      };
+
+      // localdrafts is a synthetic folder and so we never want a connection
+      // for it.  This is a somewhat awkward place to make this decision, but
+      // it does work.
+      if (needConn && storage.folderMeta.type !== 'localdrafts') {
+        syncer.folderConn.withConnection(function () {
+          // When we release the mutex, the folder may not
+          // release its connection, so be sure to reset
+          // error handling (deathback).  We are slightly
+          // abusing the mutex releasing mutex mechanism
+          // here. And we do want to do this before calling
+          // the actual mutex releaser since we might
+          // otherwise interact with someone else who just
+          // acquired the mutex, (only) theoretically.
+          self._heldMutexReleasers.push(function() {
+            syncer.folderConn.clearErrorHandler();
+          });
+
+          action();
+        }, deathback, label);
+      } else {
+        action();
       }
     });
   },
@@ -246,7 +266,7 @@ ImapJobDriver.prototype = {
    */
   _acquireConnWithoutFolder: function(label, callback, deathback) {
     this._LOG.acquireConnWithoutFolder_begin(label);
-    const self = this;
+    var self = this;
     this.account.__folderDemandsConnection(
       null, label,
       function(conn) {
@@ -269,6 +289,84 @@ ImapJobDriver.prototype = {
 
   allJobsDone: $jobmixins.allJobsDone,
 
+  // snippet downloading
+
+  local_do_downloadSnippets: function(op, doneCallback) {
+    doneCallback(null);
+  },
+
+  do_downloadSnippets: function(op, doneCallback) {
+    var aggrErr;
+    this._partitionAndAccessFoldersSequentially(
+      op.messages,
+      true,
+      function perFolder(folderConn, storage, headers, namers, callWhenDone) {
+        folderConn.downloadSnippets(headers, function(err) {
+          if (err && !aggrErr) {
+            aggrErr = err;
+          }
+          callWhenDone();
+        });
+      },
+      function allDone() {
+        doneCallback(aggrErr);
+      },
+      function deadConn() {
+        aggrErr = 'aborted-retry';
+      },
+      false, // reverse?
+      'downloadSnippets',
+      true // require headers
+    );
+  },
+
+  // body rep downloading
+
+  local_do_downloadBodyReps: function(op, doneCallback) {
+    doneCallback(null);
+  },
+
+  do_downloadBodyReps: function(op, doneCallback) {
+    var self = this;
+
+    var idxLastSlash = op.messageSuid.lastIndexOf('/'),
+        folderId = op.messageSuid.substring(0, idxLastSlash);
+
+    var folderConn, folderStorage;
+    // Once we have the connection, get the current state of the body rep.
+    var gotConn = function gotConn(_folderConn, _folderStorage) {
+      folderConn = _folderConn;
+      folderStorage = _folderStorage;
+
+      folderConn.downloadBodyReps(
+        op.messageSuid, op.messageDate, onDownloadReps
+      );
+    };
+
+    var onDownloadReps = function onDownloadReps(err, bodyInfo) {
+      if (err) {
+        console.error('Error downloading reps', err);
+        // fail we cannot download for some reason?
+        return doneCallback('unknown');
+      }
+
+      // success
+      doneCallback(null, bodyInfo, true);
+    };
+
+    var deadConn = function deadConn() {
+      doneCallback('aborted-retry');
+    };
+
+    self._accessFolderForMutation(
+      folderId,
+      true,
+      gotConn,
+      deadConn,
+      'downloadBodyReps'
+    );
+  },
+
   //////////////////////////////////////////////////////////////////////////////
   // download: Download one or more attachments from a single message
 
@@ -281,6 +379,32 @@ ImapJobDriver.prototype = {
   local_undo_download: $jobmixins.local_undo_download,
 
   undo_download: $jobmixins.undo_download,
+
+  //////////////////////////////////////////////////////////////////////////////
+  // saveDraft
+
+  local_do_saveDraft: $jobmixins.local_do_saveDraft,
+
+  do_saveDraft: $jobmixins.do_saveDraft,
+
+  check_saveDraft: $jobmixins.check_saveDraft,
+
+  local_undo_saveDraft: $jobmixins.local_undo_saveDraft,
+
+  undo_saveDraft: $jobmixins.undo_saveDraft,
+
+  //////////////////////////////////////////////////////////////////////////////
+  // deleteDraft
+
+  local_do_deleteDraft: $jobmixins.local_do_deleteDraft,
+
+  do_deleteDraft: $jobmixins.do_deleteDraft,
+
+  check_deleteDraft: $jobmixins.check_deleteDraft,
+
+  local_undo_deleteDraft: $jobmixins.local_undo_deleteDraft,
+
+  undo_deleteDraft: $jobmixins.undo_deleteDraft,
 
   //////////////////////////////////////////////////////////////////////////////
   // modtags: Modify tags on messages
@@ -603,8 +727,8 @@ ImapJobDriver.prototype = {
               namer.date, newId, false,
               function(header) {
                 // If the header isn't there because it got moved, then null
-                // will be returned and it's up to the next move operation
-                // to fix this up.
+                // will be returned and it's up to the next move operation to
+                // fix this up.
                 if (header)
                   header.srvid = msg.id;
                 else
@@ -646,10 +770,14 @@ ImapJobDriver.prototype = {
           return;
         }
 
-        if (sourceStorage.folderId === targetFolderId) {
+        // There is nothing to do on localdrafts folders, server-wise.
+        if (sourceStorage.folderMeta.type === 'localdrafts') {
+          perFolderDone();
+        }
+        else if (sourceStorage.folderId === targetFolderId) {
           if (op.type === 'move') {
             // A move from a folder to itself is a no-op.
-            processNext();
+            perFolderDone();
           }
           else { // op.type === 'delete'
             // If the op is a delete and the source and destination folders
@@ -903,7 +1031,7 @@ ImapJobDriver.prototype = {
             walkBoxes(box.children, boxPath + box.delim, pathDepth + 1);
           }
           else {
-            var type = self.account._determineFolderType(box, boxPath);
+            var type = self.account._determineFolderType(box, boxPath, rawConn);
             folderMeta = self.account._learnAboutFolder(
               boxName, boxPath, parentFolderId, type, box.delim, pathDepth);
           }
@@ -1021,6 +1149,13 @@ HighLevelJobDriver.prototype = {
 var LOGFAB = exports.LOGFAB = $log.register($module, {
   ImapJobDriver: {
     type: $log.DAEMON,
+    events: {
+      savedAttachment: { storage: true, mimeType: true, size: true },
+      saveFailure: { storage: false, mimeType: false, error: false },
+    },
+    TEST_ONLY_events: {
+      saveFailure: { filename: false },
+    },
     asyncJobs: {
       acquireConnWithoutFolder: { label: false },
     },
