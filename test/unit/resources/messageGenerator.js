@@ -1,13 +1,14 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-define(
-  [
-    'exports'
-  ],
-  function(
-    exports
-  ) {
+(function (root, factory) {
+  if (typeof define === 'function' && define.amd)
+    define(['exports'], factory);
+  else {
+    root.MsgGen = {};
+    factory(root.MsgGen);
+  }
+}(this, function(exports) {
 
 function Object_extend(proto, mix, propdefs) {
   var obj = Object.create(proto, propdefs);
@@ -514,6 +515,48 @@ SyntheticMessage.prototype = Object_extend(SyntheticPart.prototype, {
   toMboxString: function() {
     return "From " + this._from[1] + "\r\n" + this.toMessageString() + "\r\n";
   },
+
+  toJSON: function() {
+    // TODO: this could be smarter, and accept more complicated MIME structures
+    var bodyPart = this.bodyPart;
+    var attachments = [];
+    if (!(bodyPart instanceof SyntheticPartLeaf)) {
+      // TODO: make attachments look like our mailapi stuff
+      attachments = bodyPart.parts.slice(1);
+      bodyPart = bodyPart.parts[0];
+    }
+
+    return {
+      header: {
+        id: this.messageId,
+        srvid: this.messageId,
+        suid: null,
+        guid: null,
+        author: this.headers['From'],
+        to: this.headers['To'],
+        cc: this.headers['Cc'],
+        bcc: this.headers['Bcc'],
+        replyTo: this.headers['Reply-To'],
+        date: this.date.valueOf(),
+        flags: [],
+        hasAttachments: attachments.length !== 0,
+        subject: this.subject,
+        snippet: null
+      },
+      body: {
+        date: this.date.valueOf(),
+        size: 0,
+        attachments: attachments,
+        relatedParts: [],
+        references: null,
+        bodyReps: [{
+          type: bodyPart.contentType === 'text/html' ? 'html' : 'plain',
+          sizeEstimate: bodyPart.body.length,
+          content: bodyPart.body
+        }]
+      }
+    };
+  },
 }, {
   messageId: {
     /** @returns the Message-Id header value. */
@@ -983,7 +1026,7 @@ MessageGenerator.prototype = {
     if (aArgs.attachments) {
       var parts = [bodyPart];
       for (var iAttach = 0; iAttach < aArgs.attachments.length; iAttach++) {
-        var attachDesc = aArgs.attachDesc[iAttach];
+        var attachDesc = aArgs.attachments[iAttach];
         parts.push(new SyntheticPartLeaf(attachDesc.body, attachDesc));
       }
       bodyPart = new SyntheticPartMultiMixed(parts);
@@ -1207,4 +1250,4 @@ function bindMethods(aObj) {
 
 bindMethods(MessageScenarioFactory.prototype);
 
-}); // end define
+})); // end define

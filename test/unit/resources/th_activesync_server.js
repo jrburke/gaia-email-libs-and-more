@@ -5,16 +5,14 @@
 define(
   [
     'rdcommon/log',
-    'activesync/codepages',
-    'wbxml',
+    './messageGenerator',
     'mailapi/accountcommon',
     'module',
     'exports'
   ],
   function(
     $log,
-    $ascp,
-    $wbxml,
+    $msggen,
     $accountcommon,
     $module,
     exports
@@ -32,69 +30,81 @@ var TestActiveSyncServerMixins = {
       throw new Error('You need to provide a universe!');
     self.T.convenienceSetup(self, 'created, listening to get port',
                             function() {
-      self.__attachToLogger(LOGFAB.testActiveSyncServer(self, null,
-                                                        self.__name));
-      if (!gActiveSyncServer) {
-        gActiveSyncServer =
-          MAGIC_SERVER_CONTROL.createServer(opts.universe._useDate);
-      }
-      self.serverHandle = gActiveSyncServer.id;
-      MAGIC_SERVER_CONTROL.useLoggers(
-        self.serverHandle,
-        {
-          request: function(request) {
-            self._logger.request(request._method, request._path,
-                                 request._headers._headers);
-          },
-          requestBody: function(reader) {
-            self._logger.requestBody(reader.dump());
-            reader.rewind();
-          },
-          response: function(request, response, writer) {
-            var body;
-            if (writer) {
-              var reader = new $wbxml.Reader(writer.bytes, $ascp);
-              body = reader.dump();
-            }
-            self._logger.response(response._httpCode, response._headers._headers,
-                                  body);
-          },
-          responseError: function(error) {
-            self._logger.responseError(error);
-          },
-       });
+      self.serverBaseUrl = 'http://localhost:8880';
       $accountcommon._autoconfigByDomain['aslocalhost'].incoming.server =
-        'http://localhost:' + gActiveSyncServer.port;
-      self._logger.started(gActiveSyncServer.port);
+        self.serverBaseUrl;
+      self.msggen = new $msggen.MessageGenerator();
+      // XXX: We'll need to sync this with the server
+      self.msggen._clock = Date.now();
     });
     self.T.convenienceDeferredCleanup(self, 'cleans up', function() {
-      // Do not stop, pre the above, but do stop logging stuff to it.
-      MAGIC_SERVER_CONTROL.useLoggers(self.serverHandle, {});
     });
+  },
+
+  _backdoor: function(request) {
+    var xhr = new XMLHttpRequest({mozSystem: true, mozAnon: true});
+    xhr.open('POST', this.serverBaseUrl + '/backdoor', false);
+    xhr.send(JSON.stringify(request));
+    return xhr.response ? JSON.parse(xhr.response) : null;
   },
 
   getFirstFolderWithType: function(folderType) {
-    var folders = this.server.foldersByType[folderType];
-    return folders[0];
+    return this._backdoor({
+      command: 'getFirstFolderWithType',
+      type: folderType
+    });
   },
 
   getFirstFolderWithName: function(folderName) {
-    return this.server.findFolderByName(folderName);
+    return this._backdoor({
+      command: 'getFirstFolderWithName',
+      name: folderName
+    });
   },
 
-  addFolder: function(name, type, parentId, messageSetDef) {
-    return MAGIC_SERVER_CONTROL.addFolder(
-      this.serverHandle, name, type, parentId, messageSetDef);
+  addFolder: function(name, type, parentId, args) {
+    var result = this._backdoor({
+      command: 'addFolder',
+      name: name,
+      type: type,
+      parentId: parentId
+    });
+    return this.addMessagesToFolder(result.id, args);
   },
 
-  addMessageToFolder: function(folderId, messageDef) {
-    return MAGIC_SERVER_CONTROL.addMessageToFolder(
-      this.serverHandle, folderId, messageDef);
+  removeFolder: function(folderId) {
+    return this._backdoor({
+      command: 'removeFolder',
+      folderId: folderId
+    });
   },
 
-  addMessagesToFolder: function(folderId, messageSetDef) {
-    return MAGIC_SERVER_CONTROL.addMessagesToFolder(
-      this.serverHandle, folderId, messageSetDef);
+  addMessageToFolder: function(folderId, args) {
+    var newMessage = args instanceof $msggen.SyntheticPart ? args :
+                     this.msggen.makeMessage(args);
+    return this._backdoor({
+      command: 'addMessageToFolder',
+      folderId: folderId,
+      message: newMessage
+    });
+  },
+
+  addMessagesToFolder: function(folderId, args) {
+   var newMessages = Array.isArray(args) ? args :
+                     this.msggen.makeMessages(args);
+    return this._backdoor({
+      command: 'addMessagesToFolder',
+      folderId: folderId,
+      messages: newMessages
+    });
+  },
+
+  removeMessageById: function(folderId, messageId) {
+    return this._backdoor({
+      command: 'removeMessageById',
+      folderId: folderId,
+      messageId: messageId
+    });
   },
 };
 

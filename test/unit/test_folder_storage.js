@@ -13,12 +13,15 @@
  * because do_check_eq kills the event loop when it fails.)
  **/
 
-define(['rdcommon/testcontext', 'mailapi/testhelper',
+define(['rdcommon/testcontext', './resources/th_main',
+        './resources/th_activesync_server',
         'mailapi/date', 'mailapi/mailslice', 'mailapi/syncbase', 'exports'],
-       function($tc, $th_imap, $date, $mailslice, $syncbase, exports) {
+       function($tc, $th_imap, $th_as_server, $date, $mailslice, $syncbase,
+                exports) {
 
 var TD = exports.TD = $tc.defineTestsFor(
-  { id: 'test_folder_storage' }, null, [$th_imap.TESTHELPER], ['app']);
+  { id: 'test_folder_storage' }, null,
+  [$th_imap.TESTHELPER, $th_as_server.TESTHELPER], ['app']);
 
 function MockDB() {
 }
@@ -127,7 +130,7 @@ function makeTestContext(account) {
           blockInfo = info;
 
           // Make sure the insertion took.
-          if (block.uids.indexOf(uid) === -1)
+          if (block.ids.indexOf(uid) === -1)
             do_throw('UID was not inserted!');
           if (!block.bodies.hasOwnProperty(uid))
             do_throw('body was not inserted!');
@@ -245,23 +248,25 @@ function makeDummyHeaders(count) {
   return headers;
 }
 
+var EXPECTED_BLOCK_SIZE = 8;
+
 /**
  * Byte size so that 2 fit in a block, but 3 will not.
  */
-const BIG2 = 36 * 1024;
+const BIG2 = (EXPECTED_BLOCK_SIZE / 2.6) * 1024;
 /**
  * Byte size so that 3 fit in a block, but 4 will not.
  */
-const BIG3 = 28 * 1024;
+const BIG3 = Math.floor((EXPECTED_BLOCK_SIZE / 3.4) * 1024);
 /**
  * Byte size so that 5 fit in a block, but 6 will not.
  */
-const BIG5 = 18 * 1024;
+const BIG5 = (EXPECTED_BLOCK_SIZE / 5) * 1024;
 
 /**
  * Byte size that exceeds our target block size.
  */
-const TOOBIG = 128 * 1024;
+const TOOBIG = Math.ceil(((EXPECTED_BLOCK_SIZE * 1.4) * 1024));
 
 
 /**
@@ -708,12 +713,12 @@ function check_block(blockInfo, count, size, startTS, startUID, endTS, endUID) {
   do_check_eq(blockInfo.estSize, size);
 }
 
-function check_body_block_contents(bodyBlock, uids, bodies) {
+function check_body_block_contents(bodyBlock, ids, bodies) {
   do_check_neq(bodyBlock, undefined);
-  do_check_eq(uids.length, bodyBlock.uids.length);
-  for (var i = 0; i < uids.length; i++){
-    do_check_eq(uids[i], bodyBlock.uids[i]);
-    do_check_eq(bodies[i], bodyBlock.bodies[uids[i]]);
+  do_check_eq(ids.length, bodyBlock.ids.length);
+  for (var i = 0; i < ids.length; i++){
+    do_check_eq(ids[i], bodyBlock.ids[i]);
+    do_check_eq(bodies[i], bodyBlock.bodies[ids[i]]);
   }
 }
 
@@ -1010,8 +1015,8 @@ TD.commonSimple('header block splitting',
   do_check_eq(newerInfo.endUID, bigHeaders[0].id);
   do_check_true(newerBlock.headers[0] === bigHeaders[0]);
   do_check_eq(newerBlock.headers.length, newerInfo.count);
-  do_check_eq(newerBlock.headers[0].id, newerBlock.uids[0]);
-  do_check_eq(newerBlock.uids.length, newerInfo.count);
+  do_check_eq(newerBlock.headers[0].id, newerBlock.ids[0]);
+  do_check_eq(newerBlock.ids.length, newerInfo.count);
   do_check_true(newerBlock.headers[expectedHeadersPerBlock-1] ===
                 bigHeaders[expectedHeadersPerBlock-1]);
 
@@ -1021,8 +1026,8 @@ TD.commonSimple('header block splitting',
   do_check_eq(olderInfo.endUID, bigHeaders[expectedHeadersPerBlock].id);
   do_check_true(olderBlock.headers[0] === bigHeaders[expectedHeadersPerBlock]);
   do_check_eq(olderBlock.headers.length, olderInfo.count);
-  do_check_eq(olderBlock.headers[0].id, olderBlock.uids[0]);
-  do_check_eq(olderBlock.uids.length, olderInfo.count);
+  do_check_eq(olderBlock.headers[0].id, olderBlock.ids[0]);
+  do_check_eq(olderBlock.ids.length, olderInfo.count);
   do_check_true(olderBlock.headers[numHeaders - expectedHeadersPerBlock - 1] ===
                 bigHeaders[numHeaders - 1]);
 
@@ -1061,6 +1066,7 @@ TD.commonCase('body insertion size', function(T, RT) {
       { sizeEstimate: 101, amountDownloaded: 0, type: 'html' }
     ]
   });
+  var header;
 
   T.group('insertion');
 

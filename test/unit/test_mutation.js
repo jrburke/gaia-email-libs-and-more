@@ -28,13 +28,15 @@
  *   server.  (While these tests can and should be run against real servers.)
  **/
 
-define(['rdcommon/testcontext', 'mailapi/testhelper',
-        'activesync/codepages', 'exports'],
-       function($tc, $th_imap, $ascp, exports) {
-const FilterType = $ascp.AirSync.Enums.FilterType;
+define(['rdcommon/testcontext', './resources/th_main',
+        './resources/th_activesync_server',
+        'activesync/codepages/AirSync', 'exports'],
+       function($tc, $th_imap, $th_as_server, $airsync, exports) {
+const FilterType = $airsync.Enums.FilterType;
 
 var TD = exports.TD = $tc.defineTestsFor(
-  { id: 'test_mutation' }, null, [$th_imap.TESTHELPER], ['app']);
+  { id: 'test_mutation' }, null,
+  [$th_imap.TESTHELPER, $th_as_server.TESTHELPER], ['app']);
 
 TD.commonCase('deleting headers midflight', function(T, RT) {
   T.group('setup');
@@ -670,6 +672,31 @@ TD.commonCase('move/trash messages', function(T, RT) {
         eSync.event('ops-done');
       });
   });
+  // Make sure we have the expected number of messages in the original folder.
+  testAccount.do_refreshFolderView(
+    sourceView,
+    { count: 2, full: 0, flags: TEST_PARAMS.type === 'imap' ? 2 : 0,
+      deleted: 0 },
+    // note: the empty changes assertion
+    { changes: [], deletions: [] },
+    { top: true, bottom: true, grow: false });
+  // Make sure we have the expected number of messages in the target folder.
+  testAccount.do_refreshFolderView(
+    targetView,
+    { count: 1, full: 0, flags: TEST_PARAMS.type === 'imap' ? 1 : 0,
+      deleted: 0 },
+    // note: the empty changes assertion
+    { changes: [], deletions: [] },
+    { top: true, bottom: true, grow: false },
+    { syncedToDawnOfTime: true });
+  // Make sure we have the expected number of messages in the trash folder.
+  testAccount.do_refreshFolderView(
+    trashView,
+    { count: 1, full: 0, flags: TEST_PARAMS.type === 'imap' ? 1 : 0,
+      deleted: 0 },
+    // note: the empty changes assertion
+    { changes: [], deletions: [] },
+    { top: true, bottom: true, grow: false });
 
   testUniverse.do_pretendToBeOffline(true);
   T.action('delete from trash', testAccount, eAccount, function() {
@@ -893,6 +920,31 @@ TD.commonCase('batch move/trash messages', function(T, RT) {
         eSync.event('ops-done');
       });
   });
+  // Make sure we have the expected number of messages in the original folder.
+  testAccount.do_refreshFolderView(
+    sourceView,
+    { count: 4, full: 0, flags: TEST_PARAMS.type === 'imap' ? 4 : 0,
+      deleted: 0 },
+    // note: the empty changes assertion
+    { changes: [], deletions: [] },
+    { top: true, bottom: true, grow: false });
+  // Make sure we have the expected number of messages in the target folder.
+  testAccount.do_refreshFolderView(
+    targetView,
+    { count: 2, full: 0, flags: TEST_PARAMS.type === 'imap' ? 2 : 0,
+      deleted: 0 },
+    // note: the empty changes assertion
+    { changes: [], deletions: [] },
+    { top: true, bottom: true, grow: false },
+    { syncedToDawnOfTime: true });
+  // Make sure we have the expected number of messages in the trash folder.
+  testAccount.do_refreshFolderView(
+    trashView,
+    { count: 2, full: 0, flags: TEST_PARAMS.type === 'imap' ? 2 : 0,
+      deleted: 0 },
+    // note: the empty changes assertion
+    { changes: [], deletions: [] },
+    { top: true, bottom: true, grow: false });
 
   testUniverse.do_pretendToBeOffline(true);
   T.action('delete from trash', testAccount, eAccount, function() {

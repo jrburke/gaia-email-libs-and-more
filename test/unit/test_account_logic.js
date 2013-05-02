@@ -3,7 +3,7 @@
  * db reuse makes this test unhappy.
  **/
 
-define(['rdcommon/testcontext', 'mailapi/testhelper',
+define(['rdcommon/testcontext', './resources/th_main',
         './resources/th_activesync_server',
         'activesync/codepages', 'exports'],
        function($tc, $th_imap, $th_as_srv, $ascp, exports) {
@@ -205,7 +205,7 @@ TD.commonCase('syncFolderList created localdrafts folder', function(T, RT) {
     // frequently don't have that folder, so use sent, which is our fallback
     // anyways and should be consistently located
     eCheck.expect_namedValue('path',
-                             sent.path.replace('sent', 'localdrafts', 'i'));
+                             sent.path.replace(/sent.*/i, 'localdrafts'));
 
     var localDrafts = testUniverse.allFoldersSlice
                         .getFirstFolderWithType('localdrafts');
@@ -227,29 +227,29 @@ TD.commonCase('syncFolderList obeys hierarchy', function(T, RT) {
                          { universe: testUniverse });
     T.action('create test folders', function() {
       const folderType = $ascp.FolderHierarchy.Enums.Type;
-      var inbox = testServer.server.foldersByType['inbox'][0],
-          sent  = testServer.server.foldersByType['sent'][0],
-          trash = testServer.server.foldersByType['trash'][0];
+      var inbox = testServer.getFirstFolderWithType('inbox'),
+          sent  = testServer.getFirstFolderWithType('sent'),
+          trash = testServer.getFirstFolderWithType('trash');
 
-      var subinbox = testServer.server.addFolder(
-        'Subinbox', folderType.Mail, inbox);
-      testServer.server.addFolder(
-        'Subsubinbox', folderType.Inbox, subinbox);
+      var subinbox = testServer.addFolder(
+        'Subinbox', folderType.Mail, inbox.folderId);
+      testServer.addFolder(
+        'Subsubinbox', folderType.Inbox, subinbox.folderId);
 
-      var subsent = testServer.server.addFolder(
-        'Subsent', folderType.Mail, sent);
-      testServer.server.addFolder(
-        'Subsubsent', folderType.Inbox, subsent);
+      var subsent = testServer.addFolder(
+        'Subsent', folderType.Mail, sent.folderId);
+      testServer.addFolder(
+        'Subsubsent', folderType.Inbox, subsent.folderId);
 
-      var subtrash = testServer.server.addFolder(
-        'Subtrash', folderType.Mail, trash);
-      testServer.server.addFolder(
-        'Subsubtrash', folderType.Inbox, subtrash);
+      var subtrash = testServer.addFolder(
+        'Subtrash', folderType.Mail, trash.folderId);
+      testServer.addFolder(
+        'Subsubtrash', folderType.Inbox, subtrash.folderId);
 
-      var folder = testServer.server.addFolder(
+      var folder = testServer.addFolder(
         'Folder', folderType.Mail);
-      testServer.server.addFolder(
-        'Subfolder', folderType.Inbox, folder);
+      testServer.addFolder(
+        'Subfolder', folderType.Inbox, folder.folderId);
     });
   }
 

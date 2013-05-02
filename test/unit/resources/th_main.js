@@ -839,16 +839,23 @@ var TestFolderMixins = {
     this._liveSliceThings = [];
   },
 
-  serverMessageContent: function(guid, idx) {
+  findServerMessage: function(guid) {
     var rep;
     var msgs = this.serverMessages;
 
     for (var i = 0; i < msgs.length; i++) {
       var msg = msgs[i];
-      if (msg.headerInfo.guid === guid) {
-        return msg.bodyInfo.bodyReps[idx || 0].content;
-      }
+
+      if (msg.headerInfo.guid === guid)
+        return msg;
     }
+
+    throw new Error('Unable to find message with guid: ' + guid);
+  },
+
+  serverMessageContent: function(guid, idx) {
+    var msg = this.findServerMessage(guid);
+    return msg.bodyInfo.bodyReps[idx || 0].content;
   },
 
   /**
@@ -870,10 +877,7 @@ var TestFolderMixins = {
     this.serverDeleted.push(this.serverMessages[index]);
     this.serverDeleted.push({ below: this.serverMessages[index - 1],
                               above: this.serverMessages[index + 1] });
-    // ActiveYsnc's removeMessageById method will do this for us; serverMessages
-    // is aliased to serverFolder.messages which gets updated.
-    if (!this.serverFolder)
-      this.serverMessages.splice(index, 1);
+    this.serverMessages.splice(index, 1);
   },
 };
 
@@ -2043,6 +2047,14 @@ var TestActiveSyncAccountMixins = {
     testFolder.connActor = this.T.actor('ActiveSyncFolderConn', folderName);
     testFolder.storageActor = this.T.actor('FolderStorage', folderName);
 
+    this.T.convenienceSetup('delete test folder', testFolder, 'if it exists',
+                            function() {
+      var existingFolder = self.testServer.getFirstFolderWithName(folderName);
+      if (!existingFolder)
+        return;
+      self.testServer.removeFolder(existingFolder.id);
+    });
+
     this.T.convenienceSetup(this, 'create test folder', testFolder, function() {
       self.expect_foundFolder(true);
       testFolder.serverFolder = self.testServer.addFolder(
@@ -2108,7 +2120,7 @@ var TestActiveSyncAccountMixins = {
     testFolder._approxMessageCount = 30;
 
     this.T.convenienceSetup(this, 'find test folder', testFolder, function() {
-      if (self.testServer) {
+      if (self.testServer && folderType !== 'localdrafts') {
         testFolder.serverFolder = self.testServer.getFirstFolderWithType(
                                     folderType);
         testFolder.serverMessages = testFolder.serverFolder.messages;
@@ -2151,7 +2163,7 @@ var TestActiveSyncAccountMixins = {
         if (totalExpected) {
           self.expect_messageSubjects(
             testFolder.knownMessages.slice(0, totalExpected)
-              .map(function(x) { return x.subject; }));
+              .map(function(x) { return x.header.subject; }));
         }
         self.expect_sliceFlags(
           expectedFlags.top, expectedFlags.bottom,
@@ -2187,8 +2199,9 @@ var TestActiveSyncAccountMixins = {
     var testFolder = viewThing.testFolder;
     this.RT.reportActiveActorThisStep(this.eAccount);
     this.RT.reportActiveActorThisStep(testFolder.connActor);
+    var totalMessageCount = 0,
+        nonet = checkFlagDefault(extraFlags, 'nonet', false);
 
-    var totalMessageCount = 0;
     if (expectedValues) {
       if (!Array.isArray(expectedValues))
         expectedValues = [expectedValues];
@@ -2196,7 +2209,7 @@ var TestActiveSyncAccountMixins = {
       for (var i = 0; i < expectedValues.length; i++) {
         var einfo = expectedValues[i];
         totalMessageCount += einfo.count;
-        if (this.universe.online) {
+        if (this.universe.online && !nonet) {
           // The client should know about all of the messages on the server
           // after a sync.  If we start modeling the server only telling us
           // things in chunks, we will want to do something more clever here,
@@ -2247,13 +2260,15 @@ var TestActiveSyncAccountMixins = {
         }
       }
     }
-    if (this.universe.online &&
+    if (this.universe.online && !nonet &&
         !checkFlagDefault(extraFlags, 'nosave', false)) {
       this.eAccount.expect_saveAccountState();
     }
     else {
       // Make account saving cause a failure; also, connection reuse, etc.
       this.eAccount.expectNothing();
+      if (nonet)
+        testFolder.connActor.expectNothing();
     }
 
     return totalMessageCount;
@@ -2263,8 +2278,9 @@ var TestActiveSyncAccountMixins = {
     var self = this;
     this.T.convenienceSetup(this, 'add message to', folder, function() {
       self.RT.reportActiveActorThisStep(self.eAccount);
-      folder.serverFolder.addMessage(messageDef);
-      self.test
+      folder.serverMessages =
+        self.testServer.addMessageToFolder(folder.serverFolder.id,
+                                           messageDef).messages;
     });
   },
 
@@ -2272,7 +2288,9 @@ var TestActiveSyncAccountMixins = {
     var self = this;
     this.T.convenienceSetup(this, 'add messages to', folder, function() {
       self.RT.reportActiveActorThisStep(self.eAccount);
-      folder.serverFolder.addMessages(messageSetDef);
+      folder.serverMessages =
+        self.testServer.addMessagesToFolder(folder.serverFolder.id,
+                                            messageSetDef).messages;
     });
   },
 };

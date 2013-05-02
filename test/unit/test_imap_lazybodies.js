@@ -1,4 +1,4 @@
-define(['rdcommon/testcontext', 'mailapi/testhelper', 'exports'],
+define(['rdcommon/testcontext', './resources/th_main', 'exports'],
        function($tc, $th_imap, exports) {
 
 var TD = exports.TD = $tc.defineTestsFor(
@@ -167,36 +167,55 @@ TD.commonCase('sync headers then download body', function(T, RT) {
     });
   });
 
-  // XXX XXX XXX
-  // This test step is defective.  It is using fakeServerMessageDeletion in
-  // a way that causes us to violate invariants that would not happen in
-  // reality.
-/*
-  T.action(testAccount, 'attempt to fetch body for deleted message', eLazy,
-           function() {
+
+  T.action(testAccount, 'partial fetching of body reps', eLazy, function() {
     var header = slice.items[1];
+    var body;
+    var content = testFolder.serverMessageContent(header.guid);
 
-    testAccount.expect_runOp(
-      'downloadBodyReps',
-      { local: false, server: true, save: 'server' });
+    // ASCII 4 bytes assumed
+    var snippet = content[1].slice(0, 4);
 
-    eLazy.expect_event('header removed');
-    header.onremove = function() {
-      eLazy.event('header removed');
-    };
-    testAccount.asyncEventsAreComingDoNotResolve();
+    eLazy.expect_namedValue('snippet', snippet);
+    eLazy.expect_namedValue('body', {
+      isDownloaded: false,
+      amountDownloaded: 4
+    });
 
-    header.getBody({ downloadBodyReps: true }, function(bodyInfo) {
-      // after we got body emulate deletion
-      testAccount.fakeServerMessageDeletion(header);
-      testAccount.asyncEventsAllDoneDoResolve();
+    eLazy.expect_namedValue('body full', {
+      isDownloaded: true,
+      content: content
+    });
 
-      bodyInfo.onchange = function() {
-        eLazy.event('change event fired!');
+    // body without bodyReps
+    header.getBody(function(_body) {
+      body = _body;
+
+      // initiate the request for partial content
+      slice.maybeRequestBodies(1, 2, { maximumBytesToFetch: 4 });
+
+      header.onchange = function() {
+        eLazy.namedValue('snippet', header.snippet);
+      };
+
+      body.onchange = function() {
+        eLazy.namedValue('body', {
+          isDownloaded: body.bodyReps[0].isDownloaded,
+          amountDownloaded: body.bodyReps[0].amountDownloaded
+        });
+
+        body.onchange = function() {
+          eLazy.namedValue('body full', {
+            isDownloaded: body.bodyReps[0].isDownloaded,
+            content: body.bodyReps[0].content
+          });
+        };
+        header.getBody({ downloadBodyReps: true }, function() {});
       };
     });
+
   });
-*/
+
 
   closeSlice();
 

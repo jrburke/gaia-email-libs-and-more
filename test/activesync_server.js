@@ -14,15 +14,27 @@ function encodeWBXML(wbxml) {
 }
 
 /**
+ * Convert an nsIInputStream into a string.
+ *
+ * @param stream the nsIInputStream
+ * @return the string
+ */
+function stringifyStream(stream) {
+  if (!stream.available())
+    return '';
+  return NetUtil.readInputStreamToString(stream, stream.available());
+}
+
+/**
  * Decode a stream from the network into a WBXML reader.
  *
  * @param stream the incoming stream
  * @return the WBXML Reader
  */
 function decodeWBXML(stream) {
-  if (!stream.available())
+  let str = stringifyStream(stream);
+  if (!str)
     return null;
-  let str = NetUtil.readInputStreamToString(stream, stream.available());
 
   let bytes = new Uint8Array(str.length);
   for (let i = 0; i < str.length; i++)
@@ -39,31 +51,15 @@ function decodeWBXML(stream) {
  * @param type (optional) the folder's type, as an enum from
  *        FolderHierarchy.Enums.Type
  * @param parent (optional) the folder to contain this folder
- * @param args (optional) arguments to pass to makeMessages() to generate
- *        initial messages for this folder
  */
-function ActiveSyncFolder(server, name, type, parentId, args) {
+function ActiveSyncFolder(server, name, type, parentId) {
   this.server = server;
   this.name = name;
   this.type = type || $_ascp.FolderHierarchy.Enums.Type.Mail;
   this.id = 'folder-' + (this.server._nextCollectionId++);
   this.parentId = parentId || '0';
 
-  if (!args) {
-    // Start with the first message one hour in the past and each message after
-    // it going one hour further into the past.  This ordering has the nice
-    // benefit that it mirrors the ordering of view slices.  It also helps make
-    // bugs in sync evident since view-slices will not automatically expand
-    // into the field of older messages.
-    args = { count: 10,
-             age: { hours: 1 },
-             age_incr: { hours: 1 },
-           };
-  }
-
-  this.messages = this.server.msgGen.makeMessages(args);
-  this.messages.sort(function(a, b) { return b.date - a.date; });
-
+  this.messages = [];
   this._nextMessageSyncId = 1;
   this._messageSyncStates = {};
 }
@@ -87,50 +83,43 @@ ActiveSyncFolder.prototype = {
   _messageInFilterRange: function(filterType, message) {
     return filterType === $_ascp.AirSync.Enums.FilterType.NoFilter ||
            (this.server._clock - this.filterTypeToMS[filterType] <=
-            message.date);
+            message.header.date);
   },
 
   /**
    * Add a single message to this folder.
    *
-   * @param args either a message object created by messageGenerator.js, or
-   *        an object of arguments to pass to makeMessage()
-   * @return the newly-added message
+   * @param newMessage either a message object created by messageGenerator.js
+   *        and converted to JSON via toJSON()
    */
-  addMessage: function(args) {
-    let newMessage = args instanceof SyntheticPart ? args :
-                     this.server.msgGen.makeMessage(args);
+  addMessage: function(newMessage) {
     this.messages.unshift(newMessage);
-    this.messages.sort(function(a, b) { return b.date - a.date; });
+    this.messages.sort(function(a, b) {
+      return b.header.date - a.header.date;
+    });
 
     for (let [,syncState] in Iterator(this._messageSyncStates)) {
       if (this._messageInFilterRange(syncState.filterType, newMessage))
         syncState.commands.push({ type: 'add', message: newMessage });
     }
-
-    return newMessage;
   },
 
   /**
    * Add an array of messages to this folder.
    *
-   * @param args either an array of message objects created by
-   *        messageGenerator.js, or an object of arguments to pass to
-   *        makeMessages()
-   * @return the newly-added messages
+   * @param newMessages an array of message objects created by
+   *        messageGenerator.js and converted to JSON via toJSON()
    */
-  addMessages: function(args) {
-    let newMessages = Array.isArray(args) ? args :
-                      this.server.msgGen.makeMessages(args);
+  addMessages: function(newMessages) {
     this.messages.unshift.apply(this.messages, newMessages);
-    this.messages.sort(function(a, b) { return b.date - a.date; });
+    this.messages.sort(function(a, b) {
+      return b.header.date - a.header.date;
+    });
 
     for (let [,syncState] in Iterator(this._messageSyncStates)) {
       for (let message of newMessages)
         syncState.commands.push({ type: 'add', message: message });
     }
-
-    return newMessages;
   },
 
   /**
@@ -141,7 +130,7 @@ ActiveSyncFolder.prototype = {
    */
   findMessageById: function(id) {
     for (let message of this.messages) {
-      if (message.messageId === id)
+      if (message.header.srvid === id)
         return message;
     }
     return null;
@@ -152,19 +141,27 @@ ActiveSyncFolder.prototype = {
    *
    * @param message the message to modify
    * @param changes an object of changes to make; currently supports |read| (a
-   *        boolean), and |flag| (a string)
+   *        boolean), and |flag| (a boolean)
    */
   changeMessage: function(message, changes) {
+    function updateFlag(flag, state) {
+      let idx = message.header.flags.indexOf(flag);
+      if (state && idx !== -1)
+        message.header.flags.push(flag);
+      if (!state && idx === -1)
+        message.header.flags.splice(idx, 1);
+    }
+
     if ('read' in changes)
-      message.metaState.read = changes.read;
+      updateFlag('\\Seen', changes.read);
     if ('flag' in changes)
-      message.metaState.flag = changes.flag;
+      updateFlag('\\Flagged', changes.flag);
 
     for (let [,syncState] in Iterator(this._messageSyncStates)) {
       // TODO: Handle the case where we already have this message in the command
       // list.
       if (this._messageInFilterRange(syncState.filterType, message))
-        syncState.commands.push({ type: 'change', messageId: message.messageId,
+        syncState.commands.push({ type: 'change', srvid: message.header.srvid,
                                   changes: changes });
     }
   },
@@ -183,7 +180,7 @@ ActiveSyncFolder.prototype = {
         for (let [,syncState] in Iterator(this._messageSyncStates)) {
           if (this._messageInFilterRange(syncState.filterType, message))
             syncState.commands.push({ type: 'delete',
-                                      messageId: message.messageId });
+                                      srvid: message.header.srvid });
         }
 
         return message;
@@ -304,10 +301,8 @@ ActiveSyncFolder.prototype = {
  */
 function ActiveSyncServer(startDate) {
   this.server = new HttpServer();
-  this.msgGen = new MessageGenerator();
-
-  // Make sure the message generator is using the same start date as us.
-  this._clock = this.msgGen._clock = startDate || Date.now();
+  // TODO: get the date from the test helper somehow...
+  this._clock = new Date();
 
   const folderType = $_ascp.FolderHierarchy.Enums.Type;
   this._folders = [];
@@ -329,7 +324,6 @@ function ActiveSyncServer(startDate) {
   this.addFolder('Trash', folderType.DefaultDeleted, null, {count: 0});
 
   this.logRequest = null;
-  this.logRequestBody = null;
   this.logResponse = null;
   this.logResponseError = null;
 }
@@ -341,6 +335,8 @@ ActiveSyncServer.prototype = {
   start: function(port) {
     this.server.registerPathHandler('/Microsoft-Server-ActiveSync',
                                     this._commandHandler.bind(this));
+    this.server.registerPathHandler('/backdoor',
+                                    this._backdoorHandler.bind(this));
     this.server.start(port);
   },
 
@@ -389,6 +385,19 @@ ActiveSyncServer.prototype = {
     return folder;
   },
 
+  removeFolder: function(folderId) {
+    for (let i = 0; i < this._folders.length; i++) {
+      if (this._folders[i].id === folderId) {
+        let folder = this._folders.splice(i, 1);
+
+        for (let [,syncState] in Iterator(this._folderSyncStates))
+          syncState.push({ type: 'delete', folderId: folderId });
+
+        return folder;
+      }
+    }
+  },
+
   /**
    * Handle incoming requests.
    *
@@ -396,27 +405,31 @@ ActiveSyncServer.prototype = {
    * @param response the nsIHttpResponse
    */
   _commandHandler: function(request, response) {
-    if (this.logRequest)
-      this.logRequest(request);
-    if (request.method === 'OPTIONS') {
-      this._options(request, response);
-    }
-    else if (request.method === 'POST') {
-      let query = {};
-      for (let param of request.queryString.split('&')) {
-        let idx = param.indexOf('=');
-        if (idx === -1) {
-          query[decodeURIComponent(param)] = null;
-        }
-        else {
-          query[decodeURIComponent(param.substring(0, idx))] =
-            decodeURIComponent(param.substring(idx + 1));
-        }
+    try {
+      if (request.method === 'OPTIONS') {
+        if (this.logRequest)
+          this.logRequest(request, null);
+        this._options(request, response);
       }
+      else if (request.method === 'POST') {
+        let query = {};
+        for (let param of request.queryString.split('&')) {
+          let idx = param.indexOf('=');
+          if (idx === -1) {
+            query[decodeURIComponent(param)] = null;
+          }
+          else {
+            query[decodeURIComponent(param.substring(0, idx))] =
+              decodeURIComponent(param.substring(idx + 1));
+          }
+        }
 
-      try {
+        // XXX: Only try to decode WBXML when the client actually sent WBXML
+        let wbxmlRequest = decodeWBXML(request.bodyInputStream);
+        if (this.logRequest)
+          this.logRequest(request, wbxmlRequest);
         let wbxmlResponse = this['_handleCommand_' + query.Cmd](
-          request, query, response);
+          wbxmlRequest, query, request, response);
 
         if (wbxmlResponse) {
           response.setStatusLine('1.1', 200, 'OK');
@@ -425,13 +438,13 @@ ActiveSyncServer.prototype = {
           if (this.logResponse)
             this.logResponse(request, response, wbxmlResponse);
         }
-      } catch(e) {
-        if (this.logResponseError)
-          this.logResponseError(e + '\n' + e.stack);
-        else
-          dump(e + '\n' + e.stack + '\n');
-        throw e;
       }
+    } catch(e) {
+      if (this.logResponseError)
+        this.logResponseError(e + '\n' + e.stack);
+      else
+        dump(e + '\n' + e.stack + '\n');
+      throw e;
     }
   },
 
@@ -464,11 +477,9 @@ ActiveSyncServer.prototype = {
    * Handle the FolderSync command. This entails keeping track of which folders
    * the client knows about using folder SyncKeys.
    *
-   * @param request the nsIHttpRequest
-   * @param query an object of URL query parameters
-   * @param response the nsIHttpResponse
+   * @param requestData the WBXML.Reader for the request
    */
-  _handleCommand_FolderSync: function(request, query, response) {
+  _handleCommand_FolderSync: function(requestData) {
     const fh = $_ascp.FolderHierarchy.Tags;
     const folderType = $_ascp.FolderHierarchy.Enums.Type;
 
@@ -478,10 +489,7 @@ ActiveSyncServer.prototype = {
     e.addEventListener([fh.FolderSync, fh.SyncKey], function(node) {
       syncKey = node.children[0].textContent;
     });
-    let reader = decodeWBXML(request.bodyInputStream);
-    if (this.logRequestBody)
-      this.logRequestBody(reader);
-    e.run(reader);
+    e.run(requestData);
 
     let nextSyncKey = 'folders-' + (this._nextFolderSyncId++);
     this._folderSyncStates[nextSyncKey] = [];
@@ -512,11 +520,16 @@ ActiveSyncServer.prototype = {
       for (let change of syncState) {
         if (change.type === 'add') {
           w.stag(fh.Add)
-           .tag(fh.ServerId, change.folder.id)
-           .tag(fh.ParentId, change.folder.parentId)
-           .tag(fh.DisplayName, change.folder.name)
-           .tag(fh.Type, change.folder.type)
-         .etag();
+             .tag(fh.ServerId, change.folder.id)
+             .tag(fh.ParentId, change.folder.parentId)
+             .tag(fh.DisplayName, change.folder.name)
+             .tag(fh.Type, change.folder.type)
+           .etag();
+        }
+        else if (change.type === 'delete') {
+          w.stag(fh.Delete)
+             .tag(fh.ServerId, change.folderId)
+           .etag();
         }
       }
     }
@@ -533,18 +546,24 @@ ActiveSyncServer.prototype = {
    * respond to commands from the client, and update clients with any changes
    * we know about.
    *
-   * @param request the nsIHttpRequest
+   * @param requestData the WBXML.Reader for the request
    * @param query an object of URL query parameters
+   * @param request the nsIHttpRequest
    * @param response the nsIHttpResponse
    */
-  _handleCommand_Sync: function(request, query, response) {
+  _handleCommand_Sync: function(requestData, query, request, response) {
+    if (!requestData)
+      requestData = this._cachedSyncRequest;
+
     const as = $_ascp.AirSync.Tags;
+    const asb = $_ascp.AirSyncBase.Tags;
     const asEnum = $_ascp.AirSync.Enums;
 
     let syncKey, collectionId, getChanges,
         server = this,
         deletesAsMoves = true,
         filterType = asEnum.FilterType.NoFilter,
+        truncationSize = 0,
         clientCommands = [];
 
     let e = new $_wbxml.EventParser();
@@ -567,12 +586,16 @@ ActiveSyncServer.prototype = {
     e.addEventListener(base.concat(as.Options, as.FilterType), function(node) {
       filterType = node.children[0].textContent;
     });
+    e.addEventListener(base.concat(as.Options, asb.BodyPreference),
+                       function(node) {
+      truncationSize = node.children[0].textContent;
+    });
     e.addEventListener(base.concat(as.Commands, as.Change), function(node) {
       let command = { type: 'change' };
       for (let child of node.children) {
         switch(child.tag) {
         case as.ServerId:
-          command.serverId = child.children[0].textContent;
+          command.srvid = child.children[0].textContent;
           break;
         case as.ApplicationData:
           command.changes = server._parseEmailChange(child);
@@ -586,18 +609,13 @@ ActiveSyncServer.prototype = {
       for (let child of node.children) {
         switch(child.tag) {
         case as.ServerId:
-          command.serverId = child.children[0].textContent;
+          command.srvid = child.children[0].textContent;
           break;
         }
       }
       clientCommands.push(command);
     });
-
-    let reader = decodeWBXML(request.bodyInputStream) ||
-                 this._cachedSyncRequest;
-    if (this.logRequestBody)
-      this.logRequestBody(reader);
-    e.run(reader);
+    e.run(requestData);
 
     // If GetChanges wasn't specified, it defaults to true when the SyncKey is
     // non-zero, and false when the SyncKey is zero.
@@ -638,11 +656,11 @@ ActiveSyncServer.prototype = {
       // Run any commands the client sent.
       for (let command of clientCommands) {
         if (command.type === 'change') {
-          let message = folder.findMessageById(command.serverId);
+          let message = folder.findMessageById(command.srvid);
           folder.changeMessage(message, command.changes);
         }
         else if (command.type === 'delete') {
-          let message = folder.removeMessageById(command.serverId);
+          let message = folder.removeMessageById(command.srvid);
           if (deletesAsMoves)
             this.foldersByType['trash'][0].addMessage(message);
         }
@@ -673,8 +691,8 @@ ActiveSyncServer.prototype = {
         // There are no changes, so cache the sync request and return an empty
         // response.
         response.setStatusLine('1.1', 200, 'OK');
-        reader.rewind();
-        this._cachedSyncRequest = reader;
+        requestData.rewind();
+        this._cachedSyncRequest = requestData;
         return;
       }
     }
@@ -702,17 +720,17 @@ ActiveSyncServer.prototype = {
       for (let command of syncState.commands) {
         if (command.type === 'add') {
           w.stag(as.Add)
-             .tag(as.ServerId, command.message.messageId)
+             .tag(as.ServerId, command.message.header.srvid)
              .stag(as.ApplicationData);
 
-          this._writeEmail(w, command.message);
+          this._writeEmail(w, command.message, truncationSize);
 
           w  .etag(as.ApplicationData)
             .etag(as.Add);
         }
         else if (command.type === 'change') {
           w.stag(as.Change)
-             .tag(as.ServerId, command.messageId)
+             .tag(as.ServerId, command.srvid)
              .stag(as.ApplicationData);
 
           if ('read' in command.changes)
@@ -728,7 +746,7 @@ ActiveSyncServer.prototype = {
         }
         else if (command.type === 'delete') {
           w.stag(as.Delete)
-             .tag(as.ServerId, command.messageId)
+             .tag(as.ServerId, command.srvid)
            .etag(as.Delete);
         }
       }
@@ -742,7 +760,7 @@ ActiveSyncServer.prototype = {
       for (let command of clientCommands) {
         if (command.type === 'change') {
           w.stag(as.Change)
-             .tag(as.ServerId, command.serverId)
+             .tag(as.ServerId, command.srvid)
              .tag(as.Status, asEnum.Status.Success)
            .etag(as.Change);
         }
@@ -762,11 +780,9 @@ ActiveSyncServer.prototype = {
    * Handle the ItemOperations command. Mainly, this is used to get message
    * bodies and attachments.
    *
-   * @param request the nsIHttpRequest
-   * @param query an object of URL query parameters
-   * @param response the nsIHttpResponse
+   * @param requestData the WBXML.Reader for the request
    */
-  _handleCommand_ItemOperations: function(request, query, response) {
+  _handleCommand_ItemOperations: function(requestData) {
     const io = $_ascp.ItemOperations.Tags;
     const as = $_ascp.AirSync.Tags;
 
@@ -783,20 +799,17 @@ ActiveSyncServer.prototype = {
           fetch.collectionId = child.children[0].textContent;
           break;
         case as.ServerId:
-          fetch.serverId = child.children[0].textContent;
+          fetch.srvid = child.children[0].textContent;
           break;
         }
       }
 
       // XXX: Implement error handling
       let folder = server._findFolderById(fetch.collectionId);
-      fetch.message = folder.findMessageById(fetch.serverId);
+      fetch.message = folder.findMessageById(fetch.srvid);
       fetches.push(fetch);
     });
-    let reader = decodeWBXML(request.bodyInputStream);
-    if (this.logRequestBody)
-      this.logRequestBody(reader);
-    e.run(reader);
+    e.run(requestData);
 
     let w = new $_wbxml.Writer('1.3', 1, 'UTF-8');
     w.stag(io.ItemOperations)
@@ -807,7 +820,7 @@ ActiveSyncServer.prototype = {
       w.stag(io.Fetch)
          .tag(io.Status, '1')
          .tag(as.CollectionId, fetch.collectionId)
-         .tag(as.ServerId, fetch.serverId)
+         .tag(as.ServerId, fetch.srvid)
          .tag(as.Class, 'Email')
          .stag(io.Properties);
 
@@ -827,11 +840,9 @@ ActiveSyncServer.prototype = {
    * Handle the GetItemEstimate command. This gives the client the number of
    * changes to expect from a Sync request.
    *
-   * @param request the nsIHttpRequest
-   * @param query an object of URL query parameters
-   * @param response the nsIHttpResponse
+   * @param requestData the WBXML.Reader for the request
    */
-  _handleCommand_GetItemEstimate: function(request, query, response) {
+  _handleCommand_GetItemEstimate: function(requestData) {
     const ie = $_ascp.ItemEstimate.Tags;
     const as = $_ascp.AirSync.Tags;
     const ieStatus = $_ascp.ItemEstimate.Enums.Status;
@@ -853,10 +864,7 @@ ActiveSyncServer.prototype = {
         }
       }
     });
-    let reader = decodeWBXML(request.bodyInputStream);
-    if (this.logRequestBody)
-      this.logRequestBody(reader);
-    e.run(reader);
+    e.run(requestData);
 
     let status, syncState, estimate,
         folder = this._findFolderById(collectionId);
@@ -893,11 +901,9 @@ ActiveSyncServer.prototype = {
    * folders. Note that they'll have to get up-to-date via a Sync request
    * afterward.
    *
-   * @param request the nsIHttpRequest
-   * @param query an object of URL query parameters
-   * @param response the nsIHttpResponse
+   * @param requestData the WBXML.Reader for the request
    */
-  _handleCommand_MoveItems: function(request, query, response) {
+  _handleCommand_MoveItems: function(requestData) {
     const mo = $_ascp.Move.Tags;
     const moStatus = $_ascp.Move.Enums.Status;
 
@@ -924,10 +930,7 @@ ActiveSyncServer.prototype = {
 
       moves.push(move);
     });
-    let reader = decodeWBXML(request.bodyInputStream);
-    if (this.logRequestBody)
-      this.logRequestBody(reader);
-    e.run(reader);
+    e.run(requestData);
 
     let w = new $_wbxml.Writer('1.3', 1, 'UTF-8');
     w.stag(mo.MoveItems);
@@ -1005,37 +1008,39 @@ ActiveSyncServer.prototype = {
    *
    * @param w the WBXML writer
    * @param message the message object
+   * @param truncSize the truncation size for the body (optional, defaults to
+   *        no truncation)
    */
-  _writeEmail: function(w, message) {
+  _writeEmail: function(w, message, truncSize) {
     const em  = $_ascp.Email.Tags;
     const asb = $_ascp.AirSyncBase.Tags;
     const asbEnum = $_ascp.AirSyncBase.Enums;
 
-    // TODO: this could be smarter, and accept more complicated MIME structures
-    let bodyPart = message.bodyPart;
-    let attachments = [];
-    if (!(bodyPart instanceof SyntheticPartLeaf)) {
-      attachments = bodyPart.parts.slice(1);
-      bodyPart = bodyPart.parts[0];
-    }
+    let bodyPart = message.body.bodyReps[0];
 
     // TODO: make this match the requested type
-    let bodyType = bodyPart._contentType === 'text/html' ?
+    let bodyType = bodyPart.type === 'plain' ?
                    asbEnum.Type.HTML : asbEnum.Type.PlainText;
 
-    w.tag(em.From, message.headers['From'])
-     .tag(em.To, message.headers['To'])
-     .tag(em.Subject, message.subject)
-     .tag(em.DateReceived, new Date(message.date).toISOString())
+    w.tag(em.From, message.header.author);
+
+    if (message.to)
+      w.tag(em.To, message.header.to);
+    if (message.cc)
+      w.tag(em.Cc, message.header.cc);
+
+    w.tag(em.Subject, message.header.subject)
+     .tag(em.DateReceived, new Date(message.header.date).toISOString())
      .tag(em.Importance, '1')
-     .tag(em.Read, message.metaState.read ? '1' : '0')
+     .tag(em.Read, message.header.flags.indexOf('\\Seen') !== -1 ? '1' : '0')
      .stag(em.Flag)
-       .tag(em.Status, message.metaState.flag || '0')
+       .tag(em.Status, message.header.flags.indexOf('\\Flagged') !== -1 ?
+                       '1' : '0')
      .etag();
 
-    if (attachments.length) {
+    if (message.header.hasAttachments) {
       w.stag(asb.Attachments);
-      for (let [i, attachment] in Iterator(attachments)) {
+      for (let [i, attachment] in Iterator(message.body.attachments)) {
         w.stag(asb.Attachment)
            .tag(asb.DisplayName, attachment._filename)
            // We intentionally mimic Gmail's style of naming FileReferences here
@@ -1044,7 +1049,7 @@ ActiveSyncServer.prototype = {
            .tag(asb.Method, asbEnum.Method.Normal)
           .tag(asb.EstimatedDataSize, attachment.body.length);
 
-        if (attachment.hasContentId) {
+        if (attachment._contentId) {
           w.tag(asb.ContentId, attachment._contentId)
            .tag(asb.IsInline, '1');
         }
@@ -1054,12 +1059,19 @@ ActiveSyncServer.prototype = {
       w.etag();
     }
 
+    let body = bodyPart.content;
+    if (truncSize !== undefined)
+      body = body.substring(0, truncSize);
+
     w.stag(asb.Body)
        .tag(asb.Type, bodyType)
-       .tag(asb.EstimatedDataSize, bodyPart.body.length)
-       .tag(asb.Truncated, '0')
-       .tag(asb.Data, bodyPart.body)
-     .etag();
+       .tag(asb.EstimatedDataSize, bodyPart.sizeEstimate)
+       .tag(asb.Truncated, body.length === bodyPart.content.length ? '0' : '1');
+
+    if (body)
+      w.tag(asb.Data, body);
+
+    w.etag(asb.Body);
   },
 
   /**
@@ -1090,5 +1102,83 @@ ActiveSyncServer.prototype = {
     }
 
     return changes;
+  },
+
+  _backdoorHandler: function(request, response) {
+    try {
+      let postData = JSON.parse(stringifyStream(request.bodyInputStream));
+      if (this.logRequest)
+        this.logRequest(request, postData);
+
+      let responseData = this['_backdoor_' + postData.command ](postData);
+      if (this.logResponse)
+        this.logResponse(request, response, responseData);
+
+      response.setStatusLine('1.1', 200, 'OK');
+      if (responseData)
+        response.write(JSON.stringify(responseData));
+    } catch(e) {
+      if (this.logResponseError)
+        this.logResponseError(e + '\n' + e.stack);
+      throw e;
+    }
+  },
+
+  _backdoor_getFirstFolderWithType: function(data) {
+    let folder = this.foldersByType[data.type][0];
+    return this._serializeFolder(folder);
+  },
+
+  _backdoor_getFirstFolderWithName: function(data) {
+    let folder = this.findFolderByName(data.name);
+    return this._serializeFolder(folder);
+  },
+
+  _backdoor_addFolder: function(data) {
+    // XXX: Come up with a smarter way to preserve folder types when deleting
+    // and recreating them!
+    const folderType = $_ascp.FolderHierarchy.Enums.Type;
+    let type = data.type;
+    if (!type) {
+      if (data.name === 'Inbox')
+        type = folderType.DefaultInbox;
+      else if (data.name === 'Sent Mail')
+        type = folderType.DefaultSent;
+      else if (data.name === 'Trash')
+        type = folderType.DefaultDeleted;
+    }
+
+    let folder = this.addFolder(data.name, type, data.parentId);
+    return this._serializeFolder(folder);
+  },
+
+  _backdoor_removeFolder: function(data) {
+    this.removeFolder(data.folderId);
+  },
+
+  _backdoor_addMessageToFolder: function(data) {
+    let folder = this._findFolderById(data.folderId);
+    folder.addMessage(data.message);
+    return this._serializeFolder(folder);
+  },
+
+  _backdoor_addMessagesToFolder: function(data) {
+    let folder = this._findFolderById(data.folderId);
+    folder.addMessages(data.messages);
+    return this._serializeFolder(folder);
+  },
+
+  _backdoor_removeMessageById: function(data) {
+    let folder = this._findFolderById(data.folderId);
+    folder.removeMessageById(data.messageId);
+  },
+
+  _serializeFolder: function(folder) {
+    if (folder) {
+      return {
+        id: folder.id,
+        messages: folder.messages
+      };
+    }
   },
 };
