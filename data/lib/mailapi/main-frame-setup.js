@@ -86,9 +86,9 @@ define(
   };
 
 
-  // Create a purposely global MailAPI, and indicate it is fake for
+  // Create MailAPI instance, and indicate it is fake for
   // now, waiting on real back end to boot up.
-  MailAPI = new $mailapi.MailAPI();
+  var MailAPI = new $mailapi.MailAPI();
   MailAPI._fake = true;
 
   var bridge = {
@@ -121,4 +121,6 @@ define(
   };
 
   init();
+
+  return MailAPI;
 }); // end define
