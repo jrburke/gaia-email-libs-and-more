@@ -24,7 +24,6 @@ buildOptions = {
   useStrict: true,
   paths: {
     'alameda': 'deps/alameda',
-    'amd-shim': 'deps/amd-shim',
     'config': 'scripts/config',
 
     // NOP's
@@ -96,9 +95,15 @@ var configs = [
 
   // root aggregate loaded in main frame context
   {
-    name: null,
-    include: ['amd-shim', 'mailapi/main-frame-setup'],
+    name: 'mailapi/main-frame-setup',
     out: jsPath + '/mailapi/main-frame-setup.js'
+  },
+
+  // root aggregate loaded in main frame context
+  {
+    name: 'mailapi/main-frame-backend',
+    exclude: ['mailapi/main-frame-setup'],
+    out: jsPath + '/mailapi/main-frame-backend.js'
   },
 
   // needed by all kinds of different layers, so broken out on its own:
