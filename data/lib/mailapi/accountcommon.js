@@ -26,7 +26,6 @@ var AUTOCONFIG_TIMEOUT_MS = 30 * 1000;
 
 var Configurators = {
   'imap+smtp': './composite/configurator',
-  'fake': './fake/configurator',
   'activesync': './activesync/configurator'
 };
 
@@ -90,6 +89,15 @@ var autoconfigByDomain = exports._autoconfigByDomain = {
       username: '%EMAILADDRESS%',
     },
   },
+  // like slocalhost, really just exists to generate a test failure
+  'saslocalhost': {
+    type: 'activesync',
+    displayName: 'Test',
+    incoming: {
+      server: 'https://localhost:443',
+      username: '%EMAILADDRESS%',
+    },
+  },
   // Mapping for a nonexistent domain for testing a bad domain without it being
   // detected ahead of time by the autoconfiguration logic or otherwise.
   'nonesuch.nonesuch': {
@@ -101,9 +109,6 @@ var autoconfigByDomain = exports._autoconfigByDomain = {
     smtpPort: 465,
     smtpCrypto: true,
     usernameIsFullEmail: false,
-  },
-  'example.com': {
-    type: 'fake',
   },
 };
 
