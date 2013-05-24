@@ -24,7 +24,6 @@ function init(MailAPI) {
       var msg = args;
 
       if (msg.type === 'hello') {
-        delete MailAPI._fake;
         MailAPI.__bridgeSend = function(msg) {
           worker.postMessage({
             uid: uid,

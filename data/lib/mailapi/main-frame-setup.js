@@ -23,24 +23,21 @@ define(
     // messages that we receive before we finish setup.
     './worker-support/shim-sham',
     './mailapi',
+    './main-frame-backend',
     'require'
   ],
   function(
     $shim_setup,
     $mailapi,
+    $backend,
     require
   ) {
 
   // Create MailAPI instance, and indicate it is fake for
   // now, waiting on real back end to boot up.
   var MailAPI = new $mailapi.MailAPI();
-  MailAPI._fake = true;
 
-  MailAPI.startBackend = function startBackend() {
-    require(['./main-frame-backend'], function (backend) {
-      backend(MailAPI);
-    });
-  };
+  $backend(MailAPI);
 
   return MailAPI;
 }); // end define
