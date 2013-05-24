@@ -14,6 +14,17 @@ define(
     exports
   ) {
 
+function parseRfc2231CharsetEncoding(s) {
+  // charset'lang'url-encoded-ish
+  var match = /^([^']*)'([^']*)'(.+)$/.exec(s);
+  if (match) {
+    // we can convert the dumb encoding into quoted printable.
+    return $mimelib.parseMimeWords(
+      '=?' + (match[1] || 'us-ascii') + '?Q?' +
+        match[3].replace(/%/g, '=') + '?=');
+  }
+  return null;
+}
 
 /**
  * Process the headers and bodystructure of a message to build preliminary state
@@ -97,13 +108,30 @@ function chewStructure(msg) {
         filename, disposition;
 
     // - Detect named parts; they could be attachments
-    if (partInfo.params && partInfo.params.name)
-      filename = partInfo.params.name;
+    // filename via content-type 'name' parameter
+    if (partInfo.params && partInfo.params.name) {
+      filename = $mimelib.parseMimeWords(partInfo.params.name);
+    }
+    // filename via content-type 'name' with charset/lang info
+    else if (partInfo.params && partInfo.params['name*']) {
+      filename = parseRfc2231CharsetEncoding(
+                   partInfo.params['name*']);
+    }
+    // rfc 2231 stuff:
+    // filename via content-disposition filename without charset/lang info
     else if (partInfo.disposition && partInfo.disposition.params &&
-             partInfo.disposition.params.filename)
-      filename = partInfo.disposition.params.filename;
-    else
+             partInfo.disposition.params.filename) {
+      filename = $mimelib.parseMimeWords(partInfo.disposition.params.filename);
+    }
+    // filename via content-disposition filename with charset/lang info
+    else if (partInfo.disposition && partInfo.disposition.params &&
+             partInfo.disposition.params['filename*']) {
+      filename = parseRfc2231CharsetEncoding(
+                   partInfo.disposition.params['filename*']);
+    }
+    else {
       filename = null;
+    }
 
     // - Start from explicit disposition, make attachment if non-displayable
     if (partInfo.disposition)
@@ -142,8 +170,7 @@ function chewStructure(msg) {
     function makePart(partInfo, filename) {
 
       return {
-        name: $mimelib.parseMimeWords(filename) ||
-              'unnamed-' + (++unnamedPartCounter),
+        name: filename || 'unnamed-' + (++unnamedPartCounter),
         contentId: partInfo.id ? stripArrows(partInfo.id) : null,
         type: (partInfo.type + '/' + partInfo.subtype).toLowerCase(),
         part: partInfo.partID,
@@ -166,13 +193,16 @@ function chewStructure(msg) {
         sizeEstimate: partInfo.size,
         amountDownloaded: 0,
         // its important to know that sizeEstimate and amountDownloaded
-        // do _not_ determine if the bodyRep is fully downloaded the
+        // do _not_ determine if the bodyRep is fully downloaded; the
         // estimated amount is not reliable
-        isDownloaded: false,
+        // Zero-byte bodies are assumed to be accurate and we treat the file
+        // as already downloaded.
+        isDownloaded: partInfo.size === 0,
         // full internal IMAP representation
         // it would also be entirely appropriate to move
         // the information on the bodyRep directly?
-        _partInfo: partInfo
+        _partInfo: partInfo.size ? partInfo : null,
+        content: ''
       };
     }
 
@@ -312,7 +342,7 @@ exports.chewHeaderAndBodyStructure =
     size: 0,
     attachments: parts.attachments,
     relatedParts: parts.relatedParts,
-    references: msg.msg.meta.references,
+    references: msg.msg.references,
     bodyReps: parts.bodyReps
   };
 
@@ -359,7 +389,7 @@ exports.updateMessageWithFetch = function(header, body, req, res, _LOG) {
     bodyRep.isDownloaded = true;
 
     // clear private space for maintaining parser state.
-    delete bodyRep._partInfo;
+    bodyRep._partInfo = null;
   }
 
   if (!bodyRep.isDownloaded && res.buffer) {

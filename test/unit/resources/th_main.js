@@ -689,9 +689,9 @@ var TestCommonAccountMixins = {
     else {
       switch (checkFlagDefault(extraFlags, 'syncedToDawnOfTime', false)) {
         case true:
-          // per the comment on do_viewFolder, this flag has no meaning when we are
-          // refreshing now that we sync FUTUREWARDS.  If we toggle it back to
-          // PASTWARDS, comment out this line and things should work.
+          // per the comment on do_viewFolder, this flag has no meaning when we
+          // are refreshing now that we sync FUTUREWARDS.  If we toggle it back
+          // to PASTWARDS, comment out this line and things should work.
           if ((syncType === 'sync' && !testFolder.initialSynced) ||
               (syncType === 'grow'))
             storageActor.expect_syncedToDawnOfTime();
@@ -820,6 +820,67 @@ var TestCommonAccountMixins = {
         });
       });
   },
+
+
+  /**
+   * Re-create the folder from scratch so that we can reset all the state on
+   * the folder.  This means all the headers and bodies will go away, etc.
+   */
+  do_recreateFolder: function(testFolder) {
+    var self = this;
+    this.T.action(this, 're-create folder', testFolder, 'of',
+                  self.eFolderAccount, function() {
+      // - runtime flags!
+      // (serverMessages is unchanged)
+      testFolder.knownMessages = [];
+      // (serverDelete is unchanged)
+      testFolder.initialSynced = false;
+
+      self.expect_folderRecreated();
+      self._expect_recreateFolder(testFolder);
+      self.folderAccount._recreateFolder(testFolder.id, function() {
+        self._logger.folderRecreated();
+      });
+    });
+  },
+
+  /**
+   * Common log for folder re-creations.  Exists so that ActiveSync and IMAP
+   * can expect a folder re-creation during the sync process when they realize
+   * the SyncKey is or UIDVALIDITY has rolled, while unit tests can explicitly
+   * trigger a folder re-creation.
+   */
+  _expect_recreateFolder: function(testFolder) {
+    var self = this;
+    this.eFolderAccount.expect_recreateFolder();
+    this.eFolderAccount.expect_saveAccountState('recreateFolder');
+
+    var oldConnActor = testFolder.connActor;
+    // Give the new actor a good name.
+    var existingActorMatch =
+          /^([^#]+)(?:#(\d+))?$/.exec(oldConnActor.__name),
+        newActorName;
+    if (existingActorMatch[2])
+      newActorName = existingActorMatch[1] + '#' +
+      (parseInt(existingActorMatch[2], 10) + 1);
+    else
+      newActorName = existingActorMatch[1] + '#2';
+    // Because only one actor will be created in this process, we don't
+    // need to reach into the 'soup' to establish the link and the test
+    // infrastructure will do it automatically for us.
+    var newConnActor = this.T.actor(
+          this.type === 'imap' ? 'ImapFolderConn' : 'ActiveSyncFolderConn',
+          newActorName),
+        newStorageActor = this.T.actor('FolderStorage', newActorName);
+    this.RT.reportActiveActorThisStep(newConnActor);
+    this.RT.reportActiveActorThisStep(newStorageActor);
+
+    testFolder.connActor = newConnActor;
+    testFolder.storageActor = newStorageActor;
+
+    return newConnActor;
+  },
+
 };
 
 var TestFolderMixins = {
@@ -827,6 +888,7 @@ var TestFolderMixins = {
     this.connActor = null;
     this.storageActor = null;
     this.id = null;
+    // the front-end MailAPI MailFolder instance for the folder
     this.mailFolder = null;
     // fake-server folder rep, if we are using a fake-server
     this.serverFolder = null;
@@ -836,6 +898,7 @@ var TestFolderMixins = {
     // messages that should be known to the client based on the sync operations
     //  we have generated expectations for.
     this.knownMessages = [];
+    // this is a runtime flag!
     this.initialSynced = false;
 
     this._approxMessageCount = 0;
@@ -895,7 +958,7 @@ var TestFolderMixins = {
 var TestImapAccountMixins = {
   exactAttachmentSizes: false,
   __constructor: function(self, opts) {
-    self.eImapAccount = self.eOpAccount =
+    self.eImapAccount = self.eOpAccount = self.eFolderAccount =
       self.T.actor('ImapAccount', self.__name, null, self);
     self.eJobDriver = self.T.actor('ImapJobDriver', self.__name, null, self);
     self.eSmtpAccount = self.T.actor('SmtpAccount', self.__name, null, self);
@@ -906,6 +969,9 @@ var TestImapAccountMixins = {
       throw new Error("Universe not specified!");
     if (!opts.universe.__testAccounts)
       throw new Error("Universe is not of the right type: " + opts.universe);
+
+    // turn on SMTP logging for our unit tests
+    $smtpacct.ENABLE_SMTP_LOGGING = true;
 
     self.accountId = null;
     self.universe = null;
@@ -971,7 +1037,8 @@ var TestImapAccountMixins = {
       self.account = self.compositeAccount =
              self.universe.accounts[
                self.testUniverse.__testAccounts.indexOf(self)];
-      self.imapAccount = self.compositeAccount._receivePiece;
+      self.folderAccount = self.imapAccount =
+        self.compositeAccount._receivePiece;
       self.smtpAccount = self.compositeAccount._sendPiece;
       self.accountId = self.compositeAccount.id;
     });
@@ -1006,6 +1073,9 @@ var TestImapAccountMixins = {
       // we expect the account state to be saved after syncing folders
       self.eImapAccount.expect_saveAccountState();
 
+      if (self._opts.timeWarp)
+        $date.TEST_LetsDoTheTimewarpAgain(self._opts.timeWarp);
+
       var TEST_PARAMS = self.RT.envOptions;
       self.MailAPI.tryToCreateAccount(
         {
@@ -1038,7 +1108,8 @@ var TestImapAccountMixins = {
             do_throw('Unable to find account for ' + TEST_PARAMS.emailAddress +
                      ' (id: ' + self.accountId + ')');
 
-          self.imapAccount = self.compositeAccount._receivePiece;
+          self.folderAccount = self.imapAccount =
+            self.compositeAccount._receivePiece;
           self.smtpAccount = self.compositeAccount._sendPiece;
 
           // Because folder list synchronizing happens as an operation, we want
@@ -1913,7 +1984,7 @@ var TestImapAccountMixins = {
 var TestActiveSyncAccountMixins = {
   exactAttachmentSizes: true,
   __constructor: function(self, opts) {
-    self.eAccount = self.eOpAccount =
+    self.eAccount = self.eOpAccount = self.eFolderAccount =
       self.T.actor('ActiveSyncAccount', self.__name, null, self);
     self.eJobDriver =
       self.T.actor('ActiveSyncJobDriver', self.__name, null, self);
@@ -1975,7 +2046,7 @@ var TestActiveSyncAccountMixins = {
       self.MailAPI = self.testUniverse.MailAPI;
 
       var idxAccount = self.testUniverse.__testAccounts.indexOf(self);
-      self.account = self.universe.accounts[idxAccount];
+      self.folderAccount = self.account = self.universe.accounts[idxAccount];
       self.accountId = self.account.id;
     });
   },
@@ -1998,16 +2069,25 @@ var TestActiveSyncAccountMixins = {
       self.universe = self.testUniverse.universe;
       self.MailAPI = self.testUniverse.MailAPI;
 
-      var TEST_PARAMS = self.RT.envOptions;
+      var TEST_PARAMS = self.RT.envOptions,
+          displayName, emailAddress, password;
+
+      if (self._opts.realAccountNeeded) {
+        displayName = TEST_PARAMS.name;
+        emailAddress = TEST_PARAMS.emailAddress;
+        password = TEST_PARAMS.password;
+      }
+      else {
+        displayName = self._opts.displayName || 'test';
+        emailAddress = self._opts.emailAddress || 'test@aslocalhost';
+        password = self._opts.password || 'test';
+      }
+
       self.MailAPI.tryToCreateAccount(
         {
-          displayName:
-            self._opts.realAccountNeeded ? TEST_PARAMS.name : 'test',
-          emailAddress:
-            self._opts.realAccountNeeded ? TEST_PARAMS.emailAddress
-                                          : 'test@aslocalhost',
-          password:
-            self._opts.realAccountNeeded ? TEST_PARAMS.password : 'test',
+          displayName: displayName,
+          emailAddress: emailAddress,
+          password: password,
           accountName: self._opts.name || null,
           forceCreate: self._opts.forceCreate
         },
@@ -2025,7 +2105,7 @@ var TestActiveSyncAccountMixins = {
           // callback.
           for (var i = 0; i < self.universe.accounts.length; i++) {
             if (self.universe.accounts[i].id === account.id) {
-              self.account = self.universe.accounts[i];
+              self.folderAccount = self.account = self.universe.accounts[i];
               break;
             }
           }
@@ -2285,36 +2365,14 @@ var TestActiveSyncAccountMixins = {
           if (einfo.filterType)
             testFolder.connActor.expect_inferFilterType(einfo.filterType);
           if (einfo.recreateFolder) {
-            this.eAccount.expect_recreateFolder(testFolder.id);
-            this.eAccount.expect_saveAccountState();
-
             var oldConnActor = testFolder.connActor;
-            oldConnActor.expect_sync_end(null, null, null);
+            var newConnActor = this._expect_recreateFolder(testFolder);
 
-            // Give the new actor a good name.
-            var existingActorMatch =
-                  /^([^#]+)(?:#(\d+))?$/.exec(oldConnActor.__name),
-                newActorName;
-            if (existingActorMatch[2])
-              newActorName = existingActorMatch[1] + '#' +
-                               (parseInt(existingActorMatch[2], 10) + 1);
-            else
-              newActorName = existingActorMatch[1] + '#2';
-            // Because only one actor will be created in this process, we don't
-            // need to reach into the 'soup' to establish the link and the test
-            // infrastructure will do it automatically for us.
-            var newConnActor = this.T.actor('ActiveSyncFolderConn',
-                                            newActorName),
-                newStorageActor = this.T.actor('FolderStorage', newActorName);
-            this.RT.reportActiveActorThisStep(newConnActor);
-            this.RT.reportActiveActorThisStep(newStorageActor);
+            oldConnActor.expect_sync_end(null, null, null);
 
             newConnActor.expect_sync_begin(null, null, null);
             newConnActor.expect_sync_end(
               einfo.full, einfo.flags, einfo.deleted);
-
-            testFolder.connActor = newConnActor;
-            testFolder.storageActor = newStorageActor;
           }
           else {
             testFolder.connActor.expect_sync_end(
@@ -2403,6 +2461,10 @@ var LOGFAB = exports.LOGFAB = $log.register($module, {
     events: {
       accountCreated: {},
       foundFolder: { found: true, rep: false },
+
+      // the accounts recreateFolder notification should be converted to an
+      // async process with begin/end, replacing this.
+      folderRecreated: {},
 
       deletionNotified: { count: true },
       creationNotified: { count: true },

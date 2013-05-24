@@ -7,6 +7,7 @@ define(
     'rdcommon/log',
     './util',
     './mailchew-strings',
+    './date',
     'require',
     'module',
     'exports'
@@ -15,6 +16,7 @@ define(
     $log,
     $imaputil,
     $mailchewStrings,
+    $date,
     require,
     $module,
     exports
@@ -258,6 +260,14 @@ MailBridge.prototype = {
 
         case 'syncRange':
           accountDef.syncRange = val;
+          break;
+
+        case 'setAsDefault':
+          // Weird things can happen if the device's clock goes back in time,
+          // but this way, at least the user can change their default if they
+          // cycle through their accounts.
+          if (val)
+            accountDef.defaultPriority = $date.NOW();
           break;
       }
     }
@@ -950,8 +960,7 @@ MailBridge.prototype = {
             to: header.to,
             cc: header.cc,
             bcc: header.bcc,
-            // we abuse guid to serve as the references list...
-            referencesStr: header.guid,
+            referencesStr: body.references,
             attachments: attachments
           });
           callWhenDone();

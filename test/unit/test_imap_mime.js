@@ -337,6 +337,57 @@ TD.commonCase('MIME hierarchies', function(T) {
         encoding: 'base64', charset: null, format: null,
         body: 'YWJj\n'
       },
+      tachImageMimeWordBase64EucKrName = {
+        filename: '=?EUC-KR?B?waa48SC++LTCIMO3us4gxsTAzyAwMDQxOS5qcGc=?=',
+        decodedFilename:
+          '\uc81c\ubaa9 \uc5c6\ub294 \ucca8\ubd80 \ud30c\uc77c 00419.jpg',
+        contentType: 'image/jpeg',
+        encoding: 'base64', charset: null, format: null,
+        body: 'YWJj\n'
+      },
+      // an attachment where the filename only comes from the continuation
+      tachImageDispositionMimeWord = {
+        disposition: "attachment;\r\n" +
+' filename="=?UTF-8?B?7KCc66qpIOyXhuuKlCDssqjrtoAg7YyM7J28IDAwNDIyLmpwZw==?="',
+        decodedFilename:
+          '\uc81c\ubaa9 \uc5c6\ub294 \ucca8\ubd80 \ud30c\uc77c 00422.jpg',
+        contentType: 'image/jpeg',
+        encoding: 'base64', charset: null, format: null,
+        body: 'YWJj\n'
+      },
+      tachImageDispositionCharsetContinuation = {
+        disposition: "attachment;\r\n" +
+" filename*0*=UTF-8''%EC%A0%9C%EB%AA%A9%20%EC%97%86%EB%8A%94%20%EC%B2%A8%EB;\r\n" +
+" filename*1*=%B6%80%20%ED%8C%8C%EC%9D%BC%20%30%30%34%31%39%2E%6A%70%67",
+        decodedFilename:
+          '\uc81c\ubaa9 \uc5c6\ub294 \ucca8\ubd80 \ud30c\uc77c 00419.jpg',
+        contentType: 'image/jpeg',
+        encoding: 'base64', charset: null, format: null,
+        body: 'YWJj\n'
+      },
+      // an attachment where the filename only comes from the content type
+      tachImageContentTypeMimeWord = {
+        contentTypeExtra: {
+          name:
+            '=?UTF-8?B?7KCc66qpIOyXhuuKlCDssqjrtoAg7YyM7J28IDAwNDE5LmpwZw==?=',
+        },
+        decodedFilename:
+          '\uc81c\ubaa9 \uc5c6\ub294 \ucca8\ubd80 \ud30c\uc77c 00419.jpg',
+        contentType: 'image/jpeg',
+        encoding: 'base64', charset: null, format: null,
+        body: 'YWJj\n'
+      },
+      tachImageContentTypeCharsetContinuation = {
+        contentTypeExtra: {
+          'name*0*': "UTF-8''%EC%A0%9C%EB%AA%A9%20%EC%97%86%EB%8A%94%20%EC%B2%A8%EB",
+          'name*1*': "%B6%80%20%ED%8C%8C%EC%9D%BC%20%30%30%34%31%39%2E%6A%70%67",
+        },
+        decodedFilename:
+          '\uc81c\ubaa9 \uc5c6\ub294 \ucca8\ubd80 \ud30c\uc77c 00419.jpg',
+        contentType: 'image/jpeg',
+        encoding: 'base64', charset: null, format: null,
+        body: 'YWJj\n'
+      },
       tachImageDoubleMimeWordName = {
         filename: mwqSammySnake + '-' + mwbMultiBase64 + '.png',
         decodedFilename: rawSammySnake + '-' + rawMultiBase64 + '.png',
@@ -488,6 +539,36 @@ TD.commonCase('MIME hierarchies', function(T) {
       attachments: [tachImageMimeWordBase64Name],
     },
     {
+      name: 'text/plain with base64 mime-word euc-kr attachment name',
+      bodyPart: bpartQpFlowed,
+      checkBody: rawFlowed,
+      attachments: [tachImageMimeWordBase64EucKrName],
+    },
+    {
+      name: 'text/plain with utf-8 fn via content-disposition mime-word',
+      bodyPart: bpartQpFlowed,
+      checkBody: rawFlowed,
+      attachments: [tachImageDispositionMimeWord],
+    },
+    {
+      name: 'text/plain with utf-8 fn via disposition charset continuation',
+      bodyPart: bpartQpFlowed,
+      checkBody: rawFlowed,
+      attachments: [tachImageDispositionCharsetContinuation],
+    },
+    {
+      name: 'text/plain with utf-8 name via content-type mime-word',
+      bodyPart: bpartQpFlowed,
+      checkBody: rawFlowed,
+      attachments: [tachImageContentTypeMimeWord],
+    },
+    {
+      name: 'text/plain with utf-8 name via content-type charset continuation',
+      bodyPart: bpartQpFlowed,
+      checkBody: rawFlowed,
+      attachments: [tachImageContentTypeCharsetContinuation],
+    },
+    {
       name: 'text/plain with multiple mime words in the attachment name',
       bodyPart: bpartQpFlowed,
       checkBody: rawFlowed,
@@ -534,15 +615,16 @@ TD.commonCase('MIME hierarchies', function(T) {
 
     return messageAppends;
   }, { messageCount: testMessages.length }); // give count for timeout purposes
+  T.group('full message download');
   // -- open the folder
-  var folderView = testAccount.do_openFolderView(
-    'syncs', fullSyncFolder,
+  var folderView1 = testAccount.do_openFolderView(
+    'full download view', fullSyncFolder,
     { count: testMessages.length, full: testMessages.length, flags: 0,
       deleted: 0 },
     { top: true, bottom: true, grow: false },
     { syncedToDawnOfTime: true });
   // -- check each message in its own step
-  testMessages.forEach(function checkMessage(msgDef, iMsg) {
+  function checkMessage(folderView, msgDef, iMsg) {
     T.check(eCheck, msgDef.name, function() {
       eCheck.expect_namedValue('body', msgDef.checkBody);
       if (msgDef.checkSnippet)
@@ -587,7 +669,38 @@ TD.commonCase('MIME hierarchies', function(T) {
         body.die();
       });
     });
+  }
+  testMessages.forEach(checkMessage.bind(null, folderView1));
+  // The re-creation will reset the slice, so we could try and just keep using
+  // this slice, but we'd need to change the sync settings to match our explicit
+  // open call up above.
+  testAccount.do_closeFolderView(folderView1);
+
+  T.group('reset folder state');
+  testAccount.do_recreateFolder(fullSyncFolder);
+
+  T.group('snippet fetch followed by full message download');
+  // sync
+  var folderView2 = testAccount.do_openFolderView(
+    'snippet download view', fullSyncFolder,
+    { count: testMessages.length, full: testMessages.length, flags: 0,
+      deleted: 0 },
+    { top: true, bottom: true, grow: false },
+    { syncedToDawnOfTime: true });
+  // request up to 4k of partial bodies for all messages!
+  T.action(eCheck, 'fetch body snippets', function() {
+    eCheck.expect_event('got snippets');
+    folderView2.slice.maybeRequestBodies(
+      0, folderView2.slice.items.length,
+      { maximumBytesToFetch: 4096 },
+      function() {
+        eCheck.event('got snippets');
+    });
   });
+
+  // same exact thing as above, but it will automatically only fetch the extra
+  // data needed
+  testMessages.forEach(checkMessage.bind(null, folderView2));
 
   T.group('cleanup');
 });
