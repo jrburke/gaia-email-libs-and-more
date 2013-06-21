@@ -1,6 +1,6 @@
 /**
- * Testhelper for DeviceStorage stuff; it adds a chance listener for the device
- * storage so we can generate log entries.
+ * Testhelper for DeviceStorage stuff for use on the worker thread; depends on
+ * matching logic in testhelper-main.js for the actual main-thread logic.
  **/
 
 define(
@@ -17,6 +17,7 @@ define(
     exports
   ) {
 
+var DEVICE_STORAGE_GET_PREFIX = 'TEST_PREFIX/';
 
 var TestDeviceStorageMixins = {
   __constructor: function(self, opts) {
@@ -77,6 +78,12 @@ var TestDeviceStorageMixins = {
   },
 
   get: function(path, callback) {
+    // remove prefix
+    if (path.indexOf(DEVICE_STORAGE_GET_PREFIX) === -1)
+      throw new Error('saved storage without test prefix');
+
+    path = path.slice(DEVICE_STORAGE_GET_PREFIX.length);
+
     var id = this._nextReqId++;
     this._callbacks[id] = callback;
     this._sendMessage('get', { id: id, path: path });
